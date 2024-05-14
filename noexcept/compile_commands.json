@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/Users/kammce/git/kammce/cpp-papers/noexcept/build/Release",
+  "command": "/Users/kammce/.conan2/p/b/arm-g6862fe2f71be3/p/bin/bin/arm-none-eabi-g++ -D_GLIBCXX_USE_CXX11_ABI=0 -I/Users/kammce/git/kammce/cpp-papers/noexcept/src -mcpu=cortex-m3 -mfloat-abi=soft -O3 -DNDEBUG -std=c++23 -g -fexceptions -fno-rtti -Wall -Wpedantic -Werror -o CMakeFiles/app.elf.dir/src/main.cpp.obj -c /Users/kammce/git/kammce/cpp-papers/noexcept/src/main.cpp",
+  "file": "/Users/kammce/git/kammce/cpp-papers/noexcept/src/main.cpp",
+  "output": "CMakeFiles/app.elf.dir/src/main.cpp.obj"
+},
+{
+  "directory": "/Users/kammce/git/kammce/cpp-papers/noexcept/build/Release",
+  "command": "/Users/kammce/.conan2/p/b/arm-g6862fe2f71be3/p/bin/bin/arm-none-eabi-g++ -D_GLIBCXX_USE_CXX11_ABI=0 -I/Users/kammce/git/kammce/cpp-papers/noexcept/src -mcpu=cortex-m3 -mfloat-abi=soft -O3 -DNDEBUG -std=c++23 -g -fexceptions -fno-rtti -Wall -Wpedantic -Werror -o CMakeFiles/app.elf.dir/src/external.cpp.obj -c /Users/kammce/git/kammce/cpp-papers/noexcept/src/external.cpp",
+  "file": "/Users/kammce/git/kammce/cpp-papers/noexcept/src/external.cpp",
+  "output": "CMakeFiles/app.elf.dir/src/external.cpp.obj"
+}
+]
