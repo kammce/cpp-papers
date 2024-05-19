@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @author your name (you@domain.com)
+ * @author Khalil Estell
  * @brief
  * @version 0.1
  * @date 2024-05-14
@@ -17,9 +17,11 @@
 #include <cstdint>
 
 #include <algorithm>
+#include <exception>
 #include <span>
-#include <system_error>
 
+#include "dtor_paths.hpp"
+#include "except_vs_noexcept.hpp"
 #include "external.hpp"
 
 void*
@@ -48,153 +50,38 @@ get_function(volatile const arm_index_entry& p_entry)
 {
   return to_absolute_address(&p_entry.function);
 }
+namespace __cxxabiv1 {                               // NOLINT
+std::terminate_handler __terminate_handler = +[]() { // NOLINT
+  while (true) {
+    continue;
+  }
+};
+}
 
 extern "C"
 {
+  void _exit([[maybe_unused]] int rc) // NOLINT
+  {
+    std::terminate();
+  }
+  void* __wrap___cxa_allocate_exception(unsigned int p_size) noexcept // NOLINT
+  {
+    // Size of the GCC exception object header is 128 bytes. Will have to update
+    // this if the size of the EO increases. 😅
+    // Might need to add some GCC macro flags here to keep track of all of the
+    // EO sizes over the versions.
+    constexpr size_t header_size = 200;
+    static std::array<std::uint8_t, 256> exception_memory{};
+    return exception_memory.data() + header_size;
+  }
+
+  void __wrap___cxa_free_exception(void*) noexcept // NOLINT
+  {
+  }
   extern const arm_index_entry __exidx_start;
   extern const arm_index_entry __exidx_end;
-  void __wrap___gxx_personality_v0() {}
+  extern void __gxx_personality_v0(...);
 }
-
-[[gnu::noinline]] void
-noexcept_calls_all_noexcept() noexcept
-{
-  bar_noexcept();
-  baz_noexcept();
-  qaz_noexcept();
-}
-
-[[gnu::noinline]] void
-noexcept_calls_mixed_functions() noexcept
-{
-  bar_noexcept();
-  baz();
-  qaz_noexcept();
-}
-
-[[gnu::noinline]] void
-except_calls_all_noexcept()
-{
-  bar_noexcept();
-  baz_noexcept();
-  qaz_noexcept();
-}
-
-[[gnu::noinline]] void
-except_calls_mixed() noexcept
-{
-  bar_noexcept();
-  baz();
-  qaz_noexcept();
-}
-
-[[gnu::noinline]] void
-except_calls_except()
-{
-  bar();
-  baz();
-  qaz();
-}
-
-[[gnu::noinline]] void
-noexcept_calls_except() noexcept
-{
-  bar();
-  baz();
-  qaz();
-}
-
-[[gnu::noinline]] void
-noexcept_calls_all_noexcept_in_try_catch() noexcept
-{
-  try {
-    bar_noexcept();
-    baz_noexcept();
-  } catch (...) {
-    side_effect[9] = side_effect[9] + 1;
-  }
-}
-
-[[gnu::noinline]] void
-noexcept_calls_mixed_in_try_catch() noexcept
-{
-  try {
-    bar();
-    baz_noexcept();
-  } catch (...) {
-    side_effect[15] = side_effect[15] + 1;
-  }
-}
-
-[[gnu::noinline]] void
-except_calls_except_in_try_catch()
-{
-  try {
-    bar();
-    baz();
-  } catch (...) {
-    side_effect[8] = side_effect[8] + 1;
-  }
-}
-
-[[gnu::noinline]] void
-noexcept_calls_except_in_try_catch() noexcept
-{
-  try {
-    bar();
-    baz();
-  } catch (...) {
-    side_effect[17] = side_effect[17] + 1;
-  }
-}
-
-[[gnu::noinline]] void
-except_calling_mixed_in_try_catch()
-{
-  try {
-    bar();
-    baz_noexcept();
-  } catch (...) {
-    side_effect[22] = side_effect[22] + 1;
-  }
-}
-
-struct my_struct_t
-{
-  int a;
-  int b;
-  int c;
-};
-
-[[gnu::noinline]] void
-initialize(my_struct_t& my_struct)
-{
-  my_struct.a = 5;
-  my_struct.b = 15;
-  my_struct.c = 15;
-}
-
-class my_class
-{
-public:
-  enum class state_t : std::uint8_t
-  {
-    initialize,
-    busy,
-    ready,
-  };
-
-  my_class(state_t p_state) noexcept
-    : m_state(p_state)
-  {
-  }
-
-  state_t state_noexcept() noexcept { return m_state; }
-  state_t state() { return m_state; }
-
-private:
-  state_t m_state = state_t::initialize;
-};
 
 template<typename T>
 auto*
@@ -229,10 +116,17 @@ enum class metadata_rank : std::uint8_t
   table_gcc_lsda,
 };
 
-struct function_meta_info
+struct lsda_section_size
 {
-  function_meta_info() = default;
-  function_meta_info(const arm_index_entry& p_entry)
+  size_t count = 0;
+  size_t size = 0;
+};
+
+struct exception_info
+{
+  exception_info() = default;
+
+  exception_info(const arm_index_entry& p_entry)
   {
     function_address = get_function(p_entry);
     index_entry = &p_entry;
@@ -255,8 +149,8 @@ struct function_meta_info
       // table.
       void* data_handler = to_absolute_address(table_data_ptr);
 
-      if (data_handler ==
-          reinterpret_cast<void*>(&__wrap___gxx_personality_v0)) {
+      if (data_handler == reinterpret_cast<void*>(__gxx_personality_v0)) {
+        // This is GCC LSDA data
         rank = metadata_rank::table_gcc_lsda;
         return;
       }
@@ -270,40 +164,368 @@ struct function_meta_info
   metadata_rank rank = metadata_rank::unknown;
 };
 
-volatile my_class::state_t current_state;
-volatile const arm_index_entry* start = nullptr;
-volatile const arm_index_entry* end = nullptr;
-volatile void* starting_function = 0;
-volatile void* end_function = 0;
+std::uint32_t
+read_uleb128(const std::uint8_t** p_ptr)
+{
+  std::uint32_t result = 0;
+  std::uint8_t shift_amount = 0;
+
+  while (true) {
+    const std::uint8_t uleb128 = **p_ptr;
+
+    result |= (uleb128 & 0b0111'1111) << shift_amount;
+    shift_amount += 7;
+    (*p_ptr)++;
+
+    if (not(uleb128 & 0b1000'0000)) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+std::int32_t
+read_leb128(const std::uint8_t** p_ptr)
+{
+  std::int32_t result = 0;
+  std::uint8_t shift_amount = 0;
+
+  while (true) {
+    const std::uint8_t leb128 = **p_ptr;
+
+    result |= (leb128 & 0b0111'1111) << shift_amount;
+    shift_amount += 7;
+    (*p_ptr)++;
+
+    if (not(leb128 & 0b1000'0000)) {
+      if (leb128 & 0b0100'000) {
+        result |= (~0 << shift_amount);
+      }
+      break;
+    }
+  }
+
+  return result;
+}
+
+enum class personality_encoding : std::uint8_t
+{
+  absptr = 0x00,
+  uleb128 = 0x01,
+  udata2 = 0x02,
+  udata4 = 0x03,
+  udata8 = 0x04,
+  sleb128 = 0x09,
+  sdata2 = 0x0A,
+  sdata4 = 0x0B,
+  sdata8 = 0x0C,
+
+  pcrel = 0x10,
+  textrel = 0x20,
+  datarel = 0x30,
+  funcrel = 0x40,
+  aligned = 0x50,
+
+  // no data follows
+  omit = 0xff,
+};
+
+struct lsda_info
+{
+  bool valid = false;
+  std::uint32_t total_size = 0;
+  std::uint32_t max_action = 0;
+  std::uint32_t type_offset = 0;
+  personality_encoding type_encoding = personality_encoding::omit;
+  personality_encoding call_site_encoding = personality_encoding::omit;
+  lsda_section_size call_site{};
+  lsda_section_size action_table{};
+  lsda_section_size type_table{};
+};
+
+template<typename T>
+volatile const T*
+as(volatile const void* p_ptr)
+{
+  return reinterpret_cast<volatile const T*>(p_ptr);
+}
+
+personality_encoding
+operator&(const personality_encoding& p_encoding, const std::uint8_t& p_byte)
+{
+  return static_cast<personality_encoding>(
+    static_cast<std::uint8_t>(p_encoding) & p_byte);
+}
+personality_encoding
+operator&(const personality_encoding& p_encoding,
+          const personality_encoding& p_byte)
+{
+  return static_cast<personality_encoding>(
+    static_cast<std::uint8_t>(p_encoding) & static_cast<std::uint8_t>(p_byte));
+}
+
+std::uintptr_t
+read_encoded_data(const std::uint8_t** p_data, personality_encoding p_encoding)
+{
+  const std::uint8_t* ptr = *p_data;
+  std::uintptr_t result = 0;
+  const auto encoding = static_cast<personality_encoding>(p_encoding);
+
+  if (encoding == personality_encoding::omit) {
+    return 0;
+  }
+
+  // TODO: convert to hal::bit_extract w/ bit mask
+  const auto encoding_type = p_encoding & 0x0F;
+
+  switch (encoding_type) {
+    case personality_encoding::absptr:
+      result = *as<std::uintptr_t>(ptr);
+      ptr += sizeof(std::uintptr_t);
+      break;
+    case personality_encoding::uleb128:
+      result = read_uleb128(&ptr);
+      break;
+    case personality_encoding::udata2:
+      result = *as<std::uint16_t>(ptr);
+      ptr += sizeof(std::uint16_t);
+      break;
+    case personality_encoding::udata4:
+      result = *as<std::uint32_t>(ptr);
+      ptr += sizeof(std::uint32_t);
+      break;
+    case personality_encoding::sdata2:
+      result = *as<std::int16_t>(ptr);
+      ptr += sizeof(std::int16_t);
+      break;
+    case personality_encoding::sdata4:
+      result = *as<std::int32_t>(ptr);
+      ptr += sizeof(std::int32_t);
+      break;
+    case personality_encoding::sleb128:
+      result = read_leb128(&ptr);
+      break;
+    case personality_encoding::sdata8:
+      result = *as<std::int64_t>(ptr);
+      break;
+    case personality_encoding::udata8:
+      result = *as<std::uint64_t>(ptr);
+    default:
+      std::terminate();
+      break;
+  }
+
+  const auto encoding_offset = p_encoding & 0x70;
+
+  switch (encoding_offset) {
+    case personality_encoding::absptr:
+      // do nothing
+      break;
+    case personality_encoding::pcrel:
+      result += static_cast<std::uintptr_t>(*ptr);
+      break;
+    case personality_encoding::textrel:
+    case personality_encoding::datarel:
+    case personality_encoding::funcrel:
+    case personality_encoding::aligned:
+    default:
+      break;
+  }
+
+  // Handle indirection GCC extension
+  if (static_cast<bool>(p_encoding & 0x80)) {
+    result = *reinterpret_cast<const std::uintptr_t*>(result);
+  }
+
+  *p_data = ptr;
+  return result;
+}
+
+[[gnu::noinline]] lsda_info
+generate_lsda_info(const exception_info& p_info)
+{
+  lsda_info info{};
+  if (p_info.rank != metadata_rank::table_gcc_lsda) {
+    return info;
+  }
+
+  auto* lsda_data_word = reinterpret_cast<const std::uint32_t*>(
+    to_absolute_address(&p_info.index_entry->content));
+
+  lsda_data_word++; // skip personality function offset
+  auto personality_type = (*lsda_data_word >> 24 & 0x7F);
+  if (personality_type == 0x0) { // SU16
+    lsda_data_word++;            // skip SU16 unwind instructions
+  } else {
+    auto words_after_first = (*lsda_data_word >> 16) & 0xFF;
+    // skip the words_after_first of the unwind instructions
+    lsda_data_word += words_after_first + 1; // +1 to skip the initial word
+  }
+
+  const std::uint8_t* lsda_data =
+    reinterpret_cast<const std::uint8_t*>(lsda_data_word);
+  const auto* top_of_lsda_data = lsda_data;
+
+  if (*lsda_data == 0xFF) // omit code: DWARF
+  {
+    lsda_data++; // skip omit flag
+  } else {
+    return info;
+  }
+
+  // type table encoding of 0x00 means absolute address
+  info.type_encoding = personality_encoding{ *lsda_data };
+  if (info.type_encoding ==
+      personality_encoding::omit) { // omit code: type table
+    lsda_data++;
+    info.type_table.count = 0;
+    info.type_table.size = 0;
+  } else {
+    lsda_data++; // skip encoding
+    info.type_offset = read_uleb128(&lsda_data);
+  }
+
+  info.call_site_encoding = personality_encoding{ *lsda_data };
+
+  if (info.call_site.size == 0) {
+    info.valid = true;
+    return info;
+  }
+
+  const auto* call_site_end = lsda_data + info.call_site.size;
+  const auto* end_of_lsda = lsda_data + info.type_offset;
+  info.total_size = end_of_lsda - top_of_lsda_data;
+
+  // Scan call site
+  while (lsda_data < call_site_end) {
+    read_encoded_data(&lsda_data, info.call_site_encoding); // start
+    read_encoded_data(&lsda_data, info.call_site_encoding); // length
+    read_encoded_data(&lsda_data, info.call_site_encoding); // landing pad
+    auto action_record = read_uleb128(&lsda_data);          // action offset
+    info.max_action = std::max(info.max_action, action_record);
+    info.call_site.count++;
+  }
+
+  // If the max action record is zero, then there were no entries in the action
+  // table, and thus nothing for us to do.
+  // If the type table doesn't exist, then the action table shouldn't either.
+  //
+  // NOTE: This may not be true, but it seems logical that if the type table
+  // doesn't exist then the action record should be empty as well, because the
+  // call site table should have enough information to jump to the necessary
+  // landing pad location for cleanup.
+  if (info.max_action == 0 || info.type_offset == 0) {
+    info.valid = true;
+    return info;
+  }
+
+  // Subtract one because the action offset is offset by 1, where zero means
+  // "install context".
+  lsda_data += info.max_action - 1;
+
+  // Scan action table in reverse from the furthest offset.
+  // The action table is
+  //
+  //       [leb128:filter_number][leb128:offset_to_next]
+  //
+  // Assuming that the offset_to_next number always points upwards, back to the
+  // call site vs downwards towards the type table. The algorithm will go
+  // backwards collecting the maximum filter numbers. The max filter number
+  // indicates the number of types in the unique set that is the type table.
+  // Also assume that `throws()` descriptors will never appear.
+  while (lsda_data < end_of_lsda) {
+    const std::uint8_t* previous_location = lsda_data;
+    auto action_value = read_leb128(&lsda_data); // filter number
+    read_leb128(&lsda_data);                     // read offset
+
+    info.action_table.count++;
+    info.action_table.size += (lsda_data - previous_location);
+    info.type_table.count =
+      std::max(static_cast<std::size_t>(action_value), info.type_table.count);
+  }
+
+  // Infer the size of the type table entries based on the count and the size of
+  // a pointer.
+  info.type_table.size = sizeof(std::uintptr_t) * info.type_table.count;
+  info.valid = true;
+
+  return info;
+}
+
+template<size_t N>
+[[gnu::noinline]] std::array<exception_info, N>
+generate_meta_info(std::array<void*, N>& p_functions)
+{
+  std::array<exception_info, N> meta_info{};
+
+  // functions are sorted relative to their position in code just like the
+  // exception index.
+  std::ranges::sort(p_functions);
+  std::span<const arm_index_entry> exception_index(&__exidx_start,
+                                                   &__exidx_end);
+
+  auto f_cursor = p_functions.begin();
+  auto m_cursor = meta_info.begin();
+  auto e_cursor = exception_index.begin();
+  while (f_cursor != p_functions.end() && e_cursor != exception_index.end()) {
+    void* exception_function = get_function(*e_cursor);
+
+    if (*f_cursor == exception_function) {
+      *m_cursor = exception_info(*e_cursor);
+      f_cursor++;
+      e_cursor++;
+      m_cursor++;
+    } else if (*f_cursor < exception_function) {
+      m_cursor->function_address = *f_cursor;
+      m_cursor->rank = metadata_rank::no_entry;
+      f_cursor++;
+      m_cursor++;
+    } else if (*f_cursor > exception_function) {
+      e_cursor++;
+    }
+  }
+
+  return meta_info;
+}
+
+template<size_t N>
+[[gnu::noinline]] std::array<lsda_info, N>
+generate_lsda_info(std::array<exception_info, N>& p_exception_info)
+{
+  std::array<lsda_info, N> lsda_info_list{};
+  auto iter = lsda_info_list.begin();
+  for (const auto& element : p_exception_info) {
+    *iter = generate_lsda_info(element);
+  }
+  return lsda_info_list;
+}
+
+[[gnu::noinline]] void
+throw_something()
+{
+  throw 5;
+}
+
+volatile exception_info* meta_ptr1 = nullptr;
+volatile exception_info* meta_ptr2 = nullptr;
+volatile lsda_info* lsda_ptr3 = nullptr;
 
 int
 main()
 {
-  start = &__exidx_start;
-  end = &__exidx_end;
-  starting_function = get_function(*start);
-  end_function = get_function(*end);
+  link_in_except_vs_noexcept();
 
-  noexcept_calls_all_noexcept();
-  noexcept_calls_mixed_functions();
-  except_calls_all_noexcept();
-  except_calls_mixed();
-  except_calls_except();
-  noexcept_calls_except();
-  except_calls_except_in_try_catch();
-  noexcept_calls_except_in_try_catch();
-  noexcept_calls_mixed_in_try_catch();
-  except_calling_mixed_in_try_catch();
-
-  my_struct_t my_struct;
-  initialize(my_struct);
-
-  my_class object1(my_class::state_t::busy);
-  current_state = object1.state();
-  current_state = object1.state_noexcept();
+  // Ensure and test that exceptions work in this code.
+  try {
+    dtor::link_in_dtor_paths();
+  } catch (const dtor::action_exception_t&) {
+    side_effect[17] = side_effect[17] + 1;
+  }
 
   // Scan exception table and determine which functions have
-  std::array functions{
+  std::array noexcept_vs_except{
+    // except vs noexcept
     to_void(&noexcept_calls_all_noexcept),
     to_void(&noexcept_calls_mixed_functions),
     to_void(&except_calls_all_noexcept),
@@ -317,42 +539,52 @@ main()
     to_void(&initialize),
     to_void(&my_class::state),
     to_void(&my_class::state_noexcept),
+    // external functions
     to_void(&bar),
     to_void(&bar_noexcept),
     to_void(&baz),
     to_void(&baz_noexcept),
     to_void(&qaz),
     to_void(&qaz_noexcept),
+    to_void(&main),
+  };
+  std::array dtor{
+    // dtor_paths
+    to_void(&dtor::non_trivial_dtor::action),
+    to_void(&dtor::non_trivial_dtor::noexcept_action),
+    to_void(&dtor::noexcept_calls_all_except),
+    to_void(&dtor::noexcept_calls_all_noexcept),
+    to_void(&dtor::except_calls_all_except),
+    to_void(&dtor::except_calls_all_noexcept),
+    to_void(&dtor::noexcept_calls_experiment1),
+    to_void(&dtor::noexcept_calls_experiment2),
+    to_void(&dtor::noexcept_calls_experiment3),
+    to_void(&dtor::noexcept_calls_experiment4),
+    to_void(&dtor::noexcept_calls_experiment5),
+    to_void(&dtor::noexcept_calls_experiment6),
+    to_void(&dtor::noexcept_calls_experiment7),
+    to_void(&dtor::except_calls_experiment1),
+    to_void(&dtor::except_calls_experiment2),
+    to_void(&dtor::except_calls_experiment3),
+    to_void(&dtor::except_calls_experiment4),
+    to_void(&dtor::except_calls_experiment5),
+    to_void(&dtor::except_calls_experiment6),
+    to_void(&dtor::except_calls_experiment7),
   };
 
-  std::array<function_meta_info, functions.size()> meta_info{};
-
-  // functions are sorted relative to their position in code just like the
-  // exception index.
-  std::ranges::sort(functions);
-  std::span<const arm_index_entry> exception_index(&__exidx_start,
-                                                   &__exidx_end);
-
-  auto f_cursor = functions.begin();
-  auto m_cursor = meta_info.begin();
-  auto e_cursor = exception_index.begin();
-  while (f_cursor != functions.end() && e_cursor != exception_index.end()) {
-    void* exception_function = get_function(*e_cursor);
-    if (*f_cursor == exception_function) {
-      *m_cursor = function_meta_info(*e_cursor);
-      f_cursor++;
-      e_cursor++;
-      m_cursor++;
-    } else if (*f_cursor < exception_function) {
-      m_cursor->function_address = *f_cursor;
-      m_cursor->rank = metadata_rank::no_entry;
-      f_cursor++;
-      m_cursor++;
-    } else if (*f_cursor > exception_function) {
-      // m_cursor->function_address = *f_cursor;
-      e_cursor++;
-    }
+  try {
+    throw_something();
+  } catch (...) {
+    side_effect[0] = side_effect[0] + 1;
   }
+
+  auto meta_noexcept = generate_meta_info(noexcept_vs_except);
+  auto meta_dtor = generate_meta_info(dtor);
+  auto lsda_info = generate_lsda_info(meta_dtor[6]);
+
+  meta_ptr1 = &meta_noexcept[3];
+  meta_ptr2 = &meta_dtor[4];
+  lsda_ptr3 = &lsda_info;
 
   while (true) {
     continue;
