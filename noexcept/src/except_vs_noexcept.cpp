@@ -94,6 +94,22 @@ noexcept_calls_except_in_try_catch() noexcept
 }
 
 [[gnu::noinline]] void
+initialize(my_struct_t& my_struct)
+{
+  my_struct.a = 5;
+  my_struct.b = 15;
+  my_struct.c = 15;
+}
+
+[[gnu::noinline]] void
+initialize_noexcept(my_struct_t& my_struct) noexcept
+{
+  my_struct.a = 17;
+  my_struct.b = 22;
+  my_struct.c = 33;
+}
+
+[[gnu::noinline]] void
 except_calling_mixed_in_try_catch()
 {
   try {
@@ -102,14 +118,6 @@ except_calling_mixed_in_try_catch()
   } catch (...) {
     side_effect[22] = side_effect[22] + 1;
   }
-}
-
-[[gnu::noinline]] void
-initialize(my_struct_t& my_struct)
-{
-  my_struct.a = 5;
-  my_struct.b = 15;
-  my_struct.c = 15;
 }
 
 my_class::my_class(state_t p_state) noexcept
@@ -147,6 +155,7 @@ link_in_except_vs_noexcept()
 
   my_struct_t my_struct;
   initialize(my_struct);
+  initialize_noexcept(my_struct);
 
   my_class object1(my_class::state_t::busy);
   current_state = object1.state();

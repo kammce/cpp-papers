@@ -34,6 +34,7 @@
 # IDEs
 .vscode/
 archives/
+.cache/
 
 # GDB
 .gdb_history
@@ -42,6 +43,8 @@ archives/
 build/
 tools/
 .cache/
+CMakeUserPresets.json
+compile_commands.json
 
 # lint artifacts
 compile_commands.json

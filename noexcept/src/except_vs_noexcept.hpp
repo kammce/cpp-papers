@@ -35,6 +35,9 @@ struct my_struct_t
 [[gnu::noinline]] void
 initialize(my_struct_t& my_struct);
 
+[[gnu::noinline]] void
+initialize_noexcept(my_struct_t&) noexcept;
+
 class my_class
 {
 public:
