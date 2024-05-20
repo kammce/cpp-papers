@@ -12,14 +12,19 @@ struct non_trivial_dtor
   ~non_trivial_dtor();
 };
 
-[[gnu::noinline]] void
-noexcept_calls_all_except() noexcept;
+// Exhibit 9
 [[gnu::noinline]] void
 noexcept_calls_all_noexcept() noexcept;
 [[gnu::noinline]] void
-except_calls_all_except();
-[[gnu::noinline]] void
 except_calls_all_noexcept();
+
+// Exhibit 10
+[[gnu::noinline]] void
+noexcept_calls_all_except() noexcept;
+[[gnu::noinline]] void
+except_calls_all_except();
+
+// Exhibit 11
 [[gnu::noinline]] void
 noexcept_calls_experiment1() noexcept;
 [[gnu::noinline]] void

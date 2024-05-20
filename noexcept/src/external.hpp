@@ -5,13 +5,13 @@
 inline std::array<volatile int, 25> side_effect{};
 
 [[gnu::noinline]] void
-bar_noexcept() noexcept;
+noexcept_bar() noexcept;
 
 [[gnu::noinline]] void
-baz_noexcept() noexcept;
+noexcept_baz() noexcept;
 
 [[gnu::noinline]] void
-qaz_noexcept() noexcept;
+noexcept_qaz() noexcept;
 
 [[gnu::noinline]] void
 bar();

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
 #include <span>
 
 #include "dtor_paths.hpp"
@@ -118,8 +119,8 @@ enum class metadata_rank : std::uint8_t
 
 struct lsda_section_size
 {
-  size_t count = 0;
-  size_t size = 0;
+  std::uint32_t count = 0;
+  std::uint32_t size = 0;
 };
 
 struct exception_info
@@ -352,31 +353,30 @@ generate_lsda_info(const exception_info& p_info)
     return info;
   }
 
-  const auto* const top_of_lsda_data = reinterpret_cast<const std::uint32_t*>(
-    to_absolute_address(&p_info.index_entry->content));
-  auto* lsda_data_word = top_of_lsda_data;
+  const auto* const offset_address = &p_info.index_entry->content;
+  const auto* const top_of_lsda_data = to_absolute_address(offset_address);
+  const std::uint8_t* lsda_data =
+    reinterpret_cast<const std::uint8_t*>(top_of_lsda_data);
 
-  lsda_data_word++; // skip personality function offset
-  auto personality_type = (*lsda_data_word >> 24 & 0x7F);
-  if (personality_type == 0x0) { // SU16
-    lsda_data_word++;            // skip SU16 unwind instructions
+  lsda_data += sizeof(std::uintptr_t); // skip personality function offset
+  auto personality_type = (lsda_data[3] & 0x7F);
+  if (personality_type == 0x0) {         // SU16
+    lsda_data += sizeof(std::uintptr_t); // skip SU16 unwind instructions
   } else {
-    auto words_after_first = (*lsda_data_word >> 16) & 0xFF;
+    auto words_after_first = (lsda_data[2]) & 0xFF;
     if (words_after_first > 2) {
       // This is weird case where the unwind instructions take the place of the
       // length field. This seems to be an optimization on LU16/LU32 needing an
       // additional word to support the maximum possible of 7, but with this ABI
       // break, the max number of 4 byte words is 2 in this case. This is an
       // assumption of what is happening. This could also be a bug.
-      lsda_data_word += 2;
+      lsda_data += 2 * sizeof(std::uintptr_t);
     } else {
       // skip the words_after_first of the unwind instructions
-      lsda_data_word += words_after_first + 1; // +1 to skip the initial word
+      // +1 to skip the initial word
+      lsda_data += (words_after_first + 1) * sizeof(std::uintptr_t);
     }
   }
-
-  const std::uint8_t* lsda_data =
-    reinterpret_cast<const std::uint8_t*>(lsda_data_word);
 
   // Check if DWARF info is include (return early if so, not supported
   // currently).
@@ -405,7 +405,14 @@ generate_lsda_info(const exception_info& p_info)
   }
 
   const auto* call_site_end = lsda_data + info.call_site.size;
-  const auto* end_of_lsda = lsda_data + info.type_offset;
+  const std::uint8_t* end_of_lsda = lsda_data;
+
+  if (info.type_offset > 0) {
+    end_of_lsda += info.type_offset;
+  } else {
+    end_of_lsda += info.call_site.size;
+  }
+
   info.total_size =
     end_of_lsda - reinterpret_cast<const std::uint8_t*>(top_of_lsda_data);
 
@@ -432,12 +439,6 @@ generate_lsda_info(const exception_info& p_info)
     return info;
   }
 
-#if 0
-  // Subtract one because the action offset is offset by 1, where zero means
-  // "install context".
-  lsda_data += info.max_action - 1;
-#endif
-
   // Scan action table in reverse from the furthest offset.
   // The action table is
   //
@@ -455,7 +456,7 @@ generate_lsda_info(const exception_info& p_info)
     info.action_table.count++;
     info.action_table.size += (lsda_data - previous_location);
     info.type_table.count =
-      std::max(static_cast<std::size_t>(action_value), info.type_table.count);
+      std::max<std::uint32_t>(action_value, info.type_table.count);
 
     // Infer the size of the type table entries based on the count and the size
     // of a pointer.
@@ -508,10 +509,13 @@ template<size_t N>
 generate_lsda_info(std::array<exception_info, N>& p_exception_info)
 {
   std::array<lsda_info, N> lsda_info_list{};
-  auto iter = lsda_info_list.begin();
-  for (const auto& element : p_exception_info) {
-    *(iter++) = generate_lsda_info(element);
+  // Ensure each entry is set to the default
+  lsda_info_list.fill(lsda_info{});
+
+  for (size_t i = 0; i < p_exception_info.size(); i++) {
+    lsda_info_list[i] = generate_lsda_info(p_exception_info[i]);
   }
+
   return lsda_info_list;
 }
 
@@ -540,32 +544,49 @@ main()
 
   // Scan exception table and determine which functions have
   std::array noexcept_vs_except{
-    // except vs noexcept
+    // Exhibit 1
+    to_void(&initialize),
+    to_void(&noexcept_initialize),
+
+    // Exhibit 2
     to_void(&noexcept_calls_all_noexcept),
-    to_void(&noexcept_calls_mixed_functions),
     to_void(&except_calls_all_noexcept),
-    to_void(&except_calls_except),
-    to_void(&noexcept_calls_except),
+
+    // Exhibit 3
+    to_void(&noexcept_calls_mixed),
     to_void(&except_calls_mixed),
-    to_void(&except_calls_except_in_try_catch),
-    to_void(&noexcept_calls_except_in_try_catch),
+
+    // Exhibit 4
+    to_void(&noexcept_calls_all_except),
+    to_void(&except_calls_all_except),
+
+    // Exhibit 5
+    to_void(&noexcept_calls_all_noexcept_in_try_catch),
+    to_void(&except_calls_all_noexcept_in_try_catch),
+
+    // Exhibit 6
     to_void(&noexcept_calls_mixed_in_try_catch),
     to_void(&except_calling_mixed_in_try_catch),
-    to_void(&initialize),
-    to_void(&initialize_noexcept),
+
+    // Exhibit 7
+    to_void(&noexcept_calls_except_in_try_catch),
+    to_void(&except_calls_except_in_try_catch),
+
+    // Exhibit 8
     to_void(&my_class::state),
-    to_void(&my_class::state_noexcept),
+    to_void(&my_class::noexcept_state),
+
     // external functions
     to_void(&bar),
-    to_void(&bar_noexcept),
+    to_void(&noexcept_bar),
     to_void(&baz),
-    to_void(&baz_noexcept),
+    to_void(&noexcept_baz),
     to_void(&qaz),
-    to_void(&qaz_noexcept),
+    to_void(&noexcept_qaz),
     to_void(&main), // NOLINT
   };
+
   std::array dtor{
-    // dtor_paths
     to_void(&dtor::non_trivial_dtor::action),
     to_void(&dtor::non_trivial_dtor::noexcept_action),
     to_void(&dtor::noexcept_calls_all_except),
@@ -594,15 +615,15 @@ main()
     side_effect[0] = side_effect[0] + 1;
   }
 
-  auto meta_noexcept = generate_meta_info(noexcept_vs_except);
-  auto meta_dtor = generate_meta_info(dtor);
-  auto noexcept_lsda = generate_lsda_info(meta_noexcept);
-  auto dtor_lsda = generate_lsda_info(meta_dtor);
+  // Static is added here simply because the compiler kept overwriting the
+  // contents of the arrays after they were no longer needed
+  static auto noexcept_info = generate_meta_info(noexcept_vs_except);
+  static auto dtor_info = generate_meta_info(dtor);
+  static auto noexcept_lsda = generate_lsda_info(noexcept_info);
+  static auto dtor_lsda = generate_lsda_info(dtor_info);
 
-  meta_ptr1 = &meta_noexcept[3];
-  meta_ptr2 = &meta_dtor[4];
-  lsda_ptr1 = &noexcept_lsda[2];
-  lsda_ptr2 = &dtor_lsda[3];
+  lsda_ptr1 = &noexcept_lsda.end()[-1];
+  lsda_ptr2 = &dtor_lsda.end()[-1];
 
   while (true) {
     continue;
