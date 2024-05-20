@@ -23,20 +23,6 @@ non_trivial_dtor::~non_trivial_dtor()
 }
 
 [[gnu::noinline]] void
-noexcept_calls_all_except() noexcept
-{
-  non_trivial_dtor obj1;
-  obj1.action();
-  non_trivial_dtor obj2;
-  obj1.action();
-  obj2.action();
-  non_trivial_dtor obj3;
-  obj1.action();
-  obj2.action();
-  obj3.action();
-}
-
-[[gnu::noinline]] void
 noexcept_calls_all_noexcept() noexcept
 {
   non_trivial_dtor obj1;
@@ -48,20 +34,6 @@ noexcept_calls_all_noexcept() noexcept
   obj1.noexcept_action();
   obj2.noexcept_action();
   obj3.noexcept_action();
-}
-
-[[gnu::noinline]] void
-except_calls_all_except()
-{
-  non_trivial_dtor obj1;
-  obj1.action();
-  non_trivial_dtor obj2;
-  obj1.action();
-  obj2.action();
-  non_trivial_dtor obj3;
-  obj1.action();
-  obj2.action();
-  obj3.action();
 }
 
 [[gnu::noinline]] void
@@ -79,17 +51,45 @@ except_calls_all_noexcept()
 }
 
 [[gnu::noinline]] void
-noexcept_calls_experiment1() noexcept
+noexcept_calls_all_except() noexcept
 {
   non_trivial_dtor obj1;
   obj1.action();
   non_trivial_dtor obj2;
-  obj1.noexcept_action();
-  obj2.noexcept_action();
+  obj1.action();
+  obj2.action();
   non_trivial_dtor obj3;
-  obj1.noexcept_action();
-  obj2.noexcept_action();
-  obj3.noexcept_action();
+  obj1.action();
+  obj2.action();
+  obj3.action();
+}
+
+[[gnu::noinline]] void
+except_calls_all_except()
+{
+  non_trivial_dtor obj1;
+  obj1.action();
+  non_trivial_dtor obj2;
+  obj1.action();
+  obj2.action();
+  non_trivial_dtor obj3;
+  obj1.action();
+  obj2.action();
+  obj3.action();
+}
+
+[[gnu::noinline]] void
+noexcept_calls_experiment1() noexcept
+{
+  non_trivial_dtor obj1;
+  obj1.action(); // experiment 1
+  non_trivial_dtor obj2;
+  obj1.noexcept_action(); // experiment 2
+  obj2.noexcept_action(); // experiment 3
+  non_trivial_dtor obj3;
+  obj1.noexcept_action(); // experiment 4
+  obj2.noexcept_action(); // experiment 5
+  obj3.noexcept_action(); // experiment 6
 }
 
 [[gnu::noinline]] void

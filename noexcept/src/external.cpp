@@ -15,21 +15,21 @@ inner_side_effect()
 }
 
 void
-bar_noexcept() noexcept
+noexcept_bar() noexcept
 {
   inner_side_effect();
   side_effect[0] = side_effect[0] + 1;
 }
 
 void
-baz_noexcept() noexcept
+noexcept_baz() noexcept
 {
   inner_side_effect();
   side_effect[1] = side_effect[1] + 1;
 }
 
 void
-qaz_noexcept() noexcept
+noexcept_qaz() noexcept
 {
   inner_side_effect();
   side_effect[2] = side_effect[2] + 1;
