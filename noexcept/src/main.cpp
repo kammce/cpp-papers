@@ -108,7 +108,7 @@ to_void(R (C::*p_member_function)(Args...))
 
 enum class metadata_rank : std::uint8_t
 {
-  unknown,
+  unknown = 0,
   no_entry,
   inlined_noexcept,
   inlined_personality,
@@ -233,6 +233,7 @@ enum class personality_encoding : std::uint8_t
 
 struct lsda_info
 {
+  void* function = nullptr;
   bool valid = false;
   std::uint32_t total_size = 0;
   std::uint32_t max_action = 0;
@@ -346,12 +347,14 @@ read_encoded_data(const std::uint8_t** p_data, personality_encoding p_encoding)
 generate_lsda_info(const exception_info& p_info)
 {
   lsda_info info{};
+  info.function = p_info.function_address;
   if (p_info.rank != metadata_rank::table_gcc_lsda) {
     return info;
   }
 
-  auto* lsda_data_word = reinterpret_cast<const std::uint32_t*>(
+  const auto* const top_of_lsda_data = reinterpret_cast<const std::uint32_t*>(
     to_absolute_address(&p_info.index_entry->content));
+  auto* lsda_data_word = top_of_lsda_data;
 
   lsda_data_word++; // skip personality function offset
   auto personality_type = (*lsda_data_word >> 24 & 0x7F);
@@ -359,34 +362,42 @@ generate_lsda_info(const exception_info& p_info)
     lsda_data_word++;            // skip SU16 unwind instructions
   } else {
     auto words_after_first = (*lsda_data_word >> 16) & 0xFF;
-    // skip the words_after_first of the unwind instructions
-    lsda_data_word += words_after_first + 1; // +1 to skip the initial word
+    if (words_after_first > 2) {
+      // This is weird case where the unwind instructions take the place of the
+      // length field. This seems to be an optimization on LU16/LU32 needing an
+      // additional word to support the maximum possible of 7, but with this ABI
+      // break, the max number of 4 byte words is 2 in this case. This is an
+      // assumption of what is happening. This could also be a bug.
+      lsda_data_word += 2;
+    } else {
+      // skip the words_after_first of the unwind instructions
+      lsda_data_word += words_after_first + 1; // +1 to skip the initial word
+    }
   }
 
   const std::uint8_t* lsda_data =
     reinterpret_cast<const std::uint8_t*>(lsda_data_word);
-  const auto* top_of_lsda_data = lsda_data;
 
-  if (*lsda_data == 0xFF) // omit code: DWARF
-  {
+  // Check if DWARF info is include (return early if so, not supported
+  // currently).
+  if (personality_encoding{ *lsda_data } == personality_encoding::omit) {
     lsda_data++; // skip omit flag
   } else {
     return info;
   }
 
   // type table encoding of 0x00 means absolute address
-  info.type_encoding = personality_encoding{ *lsda_data };
+  info.type_encoding = personality_encoding{ *lsda_data++ };
   if (info.type_encoding ==
       personality_encoding::omit) { // omit code: type table
-    lsda_data++;
     info.type_table.count = 0;
     info.type_table.size = 0;
   } else {
-    lsda_data++; // skip encoding
     info.type_offset = read_uleb128(&lsda_data);
   }
 
-  info.call_site_encoding = personality_encoding{ *lsda_data };
+  info.call_site_encoding = personality_encoding{ *lsda_data++ };
+  info.call_site.size = read_uleb128(&lsda_data);
 
   if (info.call_site.size == 0) {
     info.valid = true;
@@ -395,7 +406,8 @@ generate_lsda_info(const exception_info& p_info)
 
   const auto* call_site_end = lsda_data + info.call_site.size;
   const auto* end_of_lsda = lsda_data + info.type_offset;
-  info.total_size = end_of_lsda - top_of_lsda_data;
+  info.total_size =
+    end_of_lsda - reinterpret_cast<const std::uint8_t*>(top_of_lsda_data);
 
   // Scan call site
   while (lsda_data < call_site_end) {
@@ -420,21 +432,22 @@ generate_lsda_info(const exception_info& p_info)
     return info;
   }
 
+#if 0
   // Subtract one because the action offset is offset by 1, where zero means
   // "install context".
   lsda_data += info.max_action - 1;
+#endif
 
   // Scan action table in reverse from the furthest offset.
   // The action table is
   //
   //       [leb128:filter_number][leb128:offset_to_next]
   //
-  // Assuming that the offset_to_next number always points upwards, back to the
-  // call site vs downwards towards the type table. The algorithm will go
-  // backwards collecting the maximum filter numbers. The max filter number
-  // indicates the number of types in the unique set that is the type table.
-  // Also assume that `throws()` descriptors will never appear.
-  while (lsda_data < end_of_lsda) {
+  // From the end of the call site, scan through the action table and collect
+  // the maximum action_value. Use the maximum found action value to determine
+  // where the true end of the action table is. The length of the type table is
+  // based on the maximum action record.
+  while (lsda_data < (end_of_lsda - info.type_table.size)) {
     const std::uint8_t* previous_location = lsda_data;
     auto action_value = read_leb128(&lsda_data); // filter number
     read_leb128(&lsda_data);                     // read offset
@@ -443,11 +456,12 @@ generate_lsda_info(const exception_info& p_info)
     info.action_table.size += (lsda_data - previous_location);
     info.type_table.count =
       std::max(static_cast<std::size_t>(action_value), info.type_table.count);
+
+    // Infer the size of the type table entries based on the count and the size
+    // of a pointer.
+    info.type_table.size = sizeof(std::uintptr_t) * info.type_table.count;
   }
 
-  // Infer the size of the type table entries based on the count and the size of
-  // a pointer.
-  info.type_table.size = sizeof(std::uintptr_t) * info.type_table.count;
   info.valid = true;
 
   return info;
@@ -496,7 +510,7 @@ generate_lsda_info(std::array<exception_info, N>& p_exception_info)
   std::array<lsda_info, N> lsda_info_list{};
   auto iter = lsda_info_list.begin();
   for (const auto& element : p_exception_info) {
-    *iter = generate_lsda_info(element);
+    *(iter++) = generate_lsda_info(element);
   }
   return lsda_info_list;
 }
@@ -509,7 +523,8 @@ throw_something()
 
 volatile exception_info* meta_ptr1 = nullptr;
 volatile exception_info* meta_ptr2 = nullptr;
-volatile lsda_info* lsda_ptr3 = nullptr;
+volatile lsda_info* lsda_ptr1 = nullptr;
+volatile lsda_info* lsda_ptr2 = nullptr;
 
 int
 main()
@@ -537,6 +552,7 @@ main()
     to_void(&noexcept_calls_mixed_in_try_catch),
     to_void(&except_calling_mixed_in_try_catch),
     to_void(&initialize),
+    to_void(&initialize_noexcept),
     to_void(&my_class::state),
     to_void(&my_class::state_noexcept),
     // external functions
@@ -546,7 +562,7 @@ main()
     to_void(&baz_noexcept),
     to_void(&qaz),
     to_void(&qaz_noexcept),
-    to_void(&main),
+    to_void(&main), // NOLINT
   };
   std::array dtor{
     // dtor_paths
@@ -580,11 +596,13 @@ main()
 
   auto meta_noexcept = generate_meta_info(noexcept_vs_except);
   auto meta_dtor = generate_meta_info(dtor);
-  auto lsda_info = generate_lsda_info(meta_dtor[6]);
+  auto noexcept_lsda = generate_lsda_info(meta_noexcept);
+  auto dtor_lsda = generate_lsda_info(meta_dtor);
 
   meta_ptr1 = &meta_noexcept[3];
   meta_ptr2 = &meta_dtor[4];
-  lsda_ptr3 = &lsda_info;
+  lsda_ptr1 = &noexcept_lsda[2];
+  lsda_ptr2 = &dtor_lsda[3];
 
   while (true) {
     continue;
