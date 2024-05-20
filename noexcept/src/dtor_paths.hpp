@@ -9,7 +9,7 @@ struct non_trivial_dtor
   non_trivial_dtor() = default;
   [[gnu::noinline]] void action();
   [[gnu::noinline]] void noexcept_action() noexcept;
-  ~non_trivial_dtor();
+  [[gnu::noinline]] ~non_trivial_dtor();
 };
 
 // Exhibit 9

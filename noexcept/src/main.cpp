@@ -399,11 +399,6 @@ generate_lsda_info(const exception_info& p_info)
   info.call_site_encoding = personality_encoding{ *lsda_data++ };
   info.call_site.size = read_uleb128(&lsda_data);
 
-  if (info.call_site.size == 0) {
-    info.valid = true;
-    return info;
-  }
-
   const auto* call_site_end = lsda_data + info.call_site.size;
   const std::uint8_t* end_of_lsda = lsda_data;
 
@@ -415,6 +410,11 @@ generate_lsda_info(const exception_info& p_info)
 
   info.total_size =
     end_of_lsda - reinterpret_cast<const std::uint8_t*>(top_of_lsda_data);
+
+  if (info.call_site.size == 0) {
+    info.valid = true;
+    return info;
+  }
 
   // Scan call site
   while (lsda_data < call_site_end) {
