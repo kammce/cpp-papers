@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <exception>
-#include <memory>
 #include <span>
 
 #include "dtor_paths.hpp"

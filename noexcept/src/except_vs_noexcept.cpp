@@ -61,6 +61,12 @@ noexcept_calls_all_noexcept_in_try_catch() noexcept
   }
 }
 
+[[gnu::used]] int
+gen_side_effect()
+{
+  side_effect[14] = side_effect[14] - 2;
+}
+
 [[gnu::noinline]] void
 except_calls_all_noexcept_in_try_catch()
 {
