@@ -1,0 +1,40 @@
+<pre class='metadata'>
+Title: Impacts of noexept on ARM table based exception metadata
+Shortname: your-spec
+Level: 1
+Status: w3c/UD
+Group: WGNAMEORWHATEVER
+Repository: org/repo-name
+URL: http://example.com/url-this-spec-will-live-at
+Editor: Khalil Estell, khalil.estell@sjsu.edu
+Abstract: C++'s exceptions as the primary method of transmitting errors from
+          detection location to handlers. There is one particular keyword that
+          is considered by many to help optimize their code but also yields
+          some powerful consequences if the property is encountered at runtime.
+          That keyword is "noexcept". Its primary function is to declare to the
+          compiler that no exception shall be emitted from this function. A lot
+          of claims have been made that by having noexcept on a large number of
+          your functions, the compiler can perform optimizations based on this
+          information. This paper dives into how noexcept affects the exception
+          metadata for "zero cost" table based exceptions. The ARM EHABI and
+          GCC/Clang/HP-Itanium table formats as an example. The data collected
+          indicates that metadata selection for functions is currently
+          suboptimal and could do with some improvements. Suggested
+          improvements are selecting equivalent but smaller data structures for
+          functions that could benefit from it and a link time evaluation of
+          all functions in order to determine if they are de facto noexcept.
+</pre>
+
+Objective {#objective}
+=======================
+
+Collect information on the impact of noexcept and calling noexcept functions in different situations to determine how noexcept can affect an application's binary size via the exception index, exception table, and the codegen of the function.
+
+The questions to be answered would be:
+
+  1. What effect does labeling a function noexcept have on its metadata?
+  2. What effect does calling noexcept functions have on this function's
+     metadata?
+  3. What effect occurs when a try block calls entirely noexcept functions?
+  4. How does calling noexcept functions affect functions with objects with
+     non-trivial destructors?
