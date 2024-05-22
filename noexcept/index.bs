@@ -1,12 +1,12 @@
 <pre class='metadata'>
 Title: Impacts of noexept on ARM table based exception metadata
-Shortname: PXXXX
+Shortname: P3313R0
 Revision: 0
 Status: DTR
 Date: 2024-05-22
 Group: WG21
 Audience: LEWG, LWG
-URL: http://wg21.link/PXXXXr0
+URL: http://wg21.link/P3313R0
 Editor: Khalil Estell, khalil.estell@sjsu.edu
 Abstract: C++ exceptions serve as the core mechanism for propagating errors
           from their detection points to respective handlers. The `noexcept`
