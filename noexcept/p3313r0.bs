@@ -7,7 +7,7 @@ Status: DTR
 Date: 2024-05-22
 Group: WG21
 Audience: LEWG, LWG
-URL: https://isocpp.org/files/papers/D3313R0.html
+URL: https://wg21.link/P3313R0
 Abstract: C++ exceptions serve as the core mechanism for propagating errors
           from their detection points to respective handlers. The `noexcept`
           keyword informs the compiler that a function is guaranteed to not
