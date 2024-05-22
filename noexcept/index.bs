@@ -1,11 +1,12 @@
 <pre class='metadata'>
 Title: Impacts of noexept on ARM table based exception metadata
-Shortname: your-spec
-Level: 1
-Status: w3c/UD
-Group: WGNAMEORWHATEVER
-Repository: org/repo-name
-URL: http://example.com/url-this-spec-will-live-at
+Shortname: PXXXX
+Revision: 0
+Status: DTR
+Date: 2024-05-21
+Group: WG21
+Audience: LEWG, LWG
+URL: http://wg21.link/PXXXXr0
 Editor: Khalil Estell, khalil.estell@sjsu.edu
 Abstract: C++'s exceptions as the primary method of transmitting errors from
           detection location to handlers. There is one particular keyword that
@@ -23,12 +24,18 @@ Abstract: C++'s exceptions as the primary method of transmitting errors from
           improvements are selecting equivalent but smaller data structures for
           functions that could benefit from it and a link time evaluation of
           all functions in order to determine if they are de facto noexcept.
+Repository: kammce/cpp-papers
+Dark Mode: no
+Markup Shorthands: markdown on
 </pre>
 
 Objective {#objective}
 =======================
 
-Collect information on the impact of noexcept and calling noexcept functions in different situations to determine how noexcept can affect an application's binary size via the exception index, exception table, and the codegen of the function.
+Collect information on the impact of noexcept and calling noexcept functions in
+different situations to determine how noexcept can affect an application's
+binary size via the exception index, exception table, and the codegen of the
+function.
 
 The questions to be answered would be:
 
@@ -38,3 +45,1445 @@ The questions to be answered would be:
   3. What effect occurs when a try block calls entirely noexcept functions?
   4. How does calling noexcept functions affect functions with objects with
      non-trivial destructors?
+
+Finally, it will provide some suggestions on what can be done to improve code
+gen in an application.
+
+Background {#background}
+========================
+
+This paper will focus on the GCC/Clang and Itanium table based exceptions on
+ARM. The writer is experienced with this form of exception handling and this
+architecture. The insights provided here should be consistent with other forms
+of table based exception handling. All data related to the exception data
+structures can be found at this link:
+<a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst">
+ARM-software/abi-aa: ehabi32.rst
+</a>
+
+The GCC LSDA is an exception to this which can be found in the document
+<a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf">
+HP Exception Handling Tables aC++ A.01.15.
+</a>
+
+ARM Exception Index {#arm-exception-index}
+------------------------------------------
+
+Each function that participates in exception unwinding will have its own entry
+in the exception index. The ARM Exception Handling ABI specifies that each
+entry contains two 32-bit words. First word is a position relative to the 31
+bit offset to the function's address, the second word is either inline unwind
+instructions or a position relative 31 bit offset to the exception metadata for
+the function.
+
+```c++
+struct arm_index_entry
+{
+ std::uint32_t function;
+ std::uint32_t content;
+};
+```
+
+If the 31st bit of content is a `1`, then the content field contains inline
+unwind instructions with up to 3 bytes worth of unwind instructions. If content
+equals the value `0x1` then it represents `CANNOT UNWIND` flag. This indicates
+to the exception runtime that this function cannot be unwound and should
+terminate. If the 31st bit is a `0` then content are a 31-bit position relative
+offset (`prel31`).
+
+To derive the absolute address of a `prel31` offset do the following:
+
+1. Sign extended value from 31 bits to 32-bits
+2. Cast to `int32_t`, the proper 32-bit offset number.
+3. Add the offset to the address of the content field within the exception index
+
+The resulting value is the absolute address of the exception data for this function.
+
+ARM Unwind Instructions {#arm-unwind-instructions}
+---------------------------------------------------
+
+ARM EHABI unwind instructions are encoded in single byte chunks. ARM THUMB2
+instructions which are used  by the Cortex M series of micro controller
+processors, are 2 to 4 bytes in size. Typical ARM instruction which is 4-bytes
+per instruction. Thus the unwind instructions are half to a quarter the size of
+regular instructions. The instructions only need about a byte to perform all of
+the tasks of unwinding a frame which only involves:
+
+   1. Deallocating local variables (subtracting the stack)
+   2. Popping registers from the stack back into the CPU
+   3. Popping special purpose registers from stack into Coprocessor
+
+A few of the common and important unwind instructions are listed below:
+
+<table>
+   <caption>ARM Unwind Instructions</caption>
+   <tr>
+      <th>Instruction (binary)</th>
+      <th>Explanation</th>
+   </tr>
+   <tr>
+      <td>00xxxxxx</td>
+      <td>vsp = vsp + (xxxxxx < < 2) + 4. Covers range 0x04 - 0x100 inclusive</td>
+   </tr>
+   <tr>
+      <td>10000000 00000000</td>
+      <td>Refuse to unwind (for example, out of a cleanup)</td>
+   </tr>
+   <tr>
+      <td>10100nnn</td>
+      <td>Pop r4-r[4+nnn]</td>
+   </tr>
+   <tr>
+      <td>10101nnn</td>
+      <td>Pop r4-r[4+nnn], r14</td>
+   </tr>
+   <tr>
+      <td>10110001 0000iiii</td>
+      <td>Pop integer registers under mask {r3, r2, r1, r0}</td>
+   </tr>
+   <tr>
+      <td>10110000</td>
+      <td>Finish</td>
+   </tr>
+</table>
+
+ARM personality routine {#arm-personality-routine}
+---------------------------------------------------
+
+There are 3 forms of ARM personality:
+
+- SU16: short unwind with 16-bit descriptor scope
+- LU16: long unwind with 16-bit descriptor scope
+- LU32: long unwind with 32-bit descriptor scope
+
+Personality data descriptors describe regions of code within a function and
+what action to be taken if the program counter is within one of those
+regions.
+
+This document will not go over ARM descriptors because GCC tends to
+use its own generic, cross platform, and compressed resentation of this data
+called the GCC C++ LSDA (language specific data area) over the architecture
+specific variant.
+
+<figure>
+  <img style="width: 100%; height: auto" src="assets/su16-personality-detailed.png" alt="Detailed image description at the bits within the short unwind personality with 16-bit scope."></img>
+  <figcaption>Detailed SU16 Personality Routine</figcaption>
+</figure>
+
+<figure>
+  <img style="width: 100%; height: auto" src="assets/lu16.png" alt="long unwind personality with 16-bit scope."></img>
+  <figcaption>LU16 Personality Routine</figcaption>
+</figure>
+
+<figure>
+  <img style="width: 100%; height: auto" src="assets/lu32.png" alt="long unwind personality with 32-bit scope."></img>
+  <figcaption>LU32 Personality Routine</figcaption>
+</figure>
+
+ARM personality routines can be no longer than 7 unwind instructions. (See
+Appendix C in
+<a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst">
+ehabi32.rst
+</a>)
+
+GCC Language Specific Data Area (LSDA) {#lsda}
+---------------------------------------------------
+
+The ARM Exception Handling ABI (EHABI) for exception handling permits the use
+of non-personality data as exception data, enabling support for
+language-specific exception handling mechanisms. Specifically, the EHABI allows
+for the integration of custom language-specific data areas within the exception
+tables. This is leveraged by GCC, which replaces the default
+architecture-specific descriptors with its own. This capability is rooted in a
+feature of the Itanium ABI, which allows different languages to provide their
+own functions for unwinding their specific versions of call frames. As a
+result, not only can C++ exceptions be handled using GCC's language-specific
+data area, but other languages like Java could also utilize this area to manage
+their exceptions.
+
+For GCC's LSDA format is:
+
+1.  **Personality Function:** 32-bit value. The MSB is set to 0. Contains a
+    `prel31` offset to the handler of this function.
+2.  **Personality Data:** Architecture specific unwind instructions.
+3.  **Header:** Variable length sequence of bytes describing where DRAWF
+    information is, where the type table ends, and how long the call site
+    region is. The dwarf location and type table entries can be labelled with
+    an omit flag `0xFF` to indicate they are empty.
+4.  **Call Site Table:** Contains information about the regions of the function
+    associated with try scopes and cleanup. It provides the  regions of the
+    function that have specific
+    actions associated with them as well as where the landing pad of the
+    action is if any action is taken.
+5.  **Action table:** Provides the index(s) to the catch-able types for the call
+    site region. It also indicates if there is cleanup to be done.
+6.  **Type Table:** Holds the unique set of `std::type_info` addresses of
+    catch-able types in the function.
+
+To learn more about how these regions are layed out, see:
+<a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf">
+HP Exception Handling Tables aC++ A.01.15.
+</a>
+
+Destructor landing pads {#dtor-landing-pads}
+---------------------------------------------
+
+<figure>
+```asm
+08001140 <dtor::except_calls_all_except()>:
+ 8001140:	b500      	push	{lr}
+ 8001142:	b085      	sub	sp, #20
+ 8001144:	f7ff ff76 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 8001148:	f7ff ff74 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 800114c:	f7ff ff72 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 8001150:	f7ff ff70 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 8001154:	f7ff ff6e 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 8001158:	f7ff ff6c 	bl	8001034 <dtor::non_trivial_dtor::action() [clone .constprop.0]>
+ 800115c:	a803      	add	r0, sp, #12
+ 800115e:	f7ff ff99 	bl	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 8001162:	a802      	add	r0, sp, #8
+ 8001164:	f7ff ff96 	bl	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 8001168:	a801      	add	r0, sp, #4
+ 800116a:	b005      	add	sp, #20
+ 800116c:	f85d eb04 	ldr.w	lr, [sp], #4
+ 8001170:	f7ff bf90 	b.w	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 8001174:	e005      	b.n	8001182 <dtor::except_calls_all_except()+0x42>
+ 8001176:	a803      	add	r0, sp, #12
+ 8001178:	f7ff ff8c 	bl	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 800117c:	a802      	add	r0, sp, #8
+ 800117e:	f7ff ff89 	bl	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 8001182:	a801      	add	r0, sp, #4
+ 8001184:	f7ff ff86 	bl	8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+ 8001188:	f000 fb26 	bl	80017d8 <__cxa_end_cleanup>
+ 800118c:	e7f6      	b.n	800117c <dtor::except_calls_all_except()+0x3c>
+ 800118e:	bf00      	nop
+```
+  <figcaption>Full Function with Destructor Cleanup Region</figcaption>
+</figure>
+
+<figure>
+```asm
+8001176:  a803        add  r0, sp, #12
+8001178:  f7ff ff8c   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800117c:  a802        add  r0, sp, #8
+800117e:  f7ff ff89   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001182:  a801        add  r0, sp, #4
+8001184:  f7ff ff86   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001188:  f000 fb26   bl  80017d8 <__cxa_end_cleanup>
+```
+  <figcaption>Isolated Destructor Cleanup Region</figcaption>
+</figure>
+
+These are regions within a function that the exception runtime will jump to
+when executing the destructors for this scope. Pictured above are ARM Thumb2
+instructions. Each instruction loads the address of the object on the stack
+into `R0`, which is the register representing the first parameter for a
+function. It then calls the object's destructor. The sequence is opposite of the
+construction of the objects. The Itanium API that is called to jump back into
+the exception unwind flow is `__cxa_end_cleanup()`. Depending on what scope the
+code was in when the exception began propagating, will change at what point the
+program counter jumps into the function.
+
+Catch landing pads {#catch-landing-pads}
+-----------------------------------------
+
+<figure>
+```asm
+80004fa: 2901        cmp r1, #1
+80004fc: d001        beq.n 8000502 <main+0x18>
+80004fe: f001 f98f   bl  8001820 <__cxa_end_cleanup>
+8000502: f001 fa51   bl  80019a8 <__cxa_begin_catch>
+8000506: 4a8f        ldr r2, [pc, #572]  @ (8000744 <main+0x25a>)
+8000508: 6c53        ldr r3, [r2, #68] @ 0x44
+800050a: 3301        adds  r3, #1
+800050c: 6453        str r3, [r2, #68] @ 0x44
+800050e: f001 fa8b   bl  8001a28 <__cxa_end_catch>
+```
+    <figcaption>Catch landing pad example</figcaption>
+</figure>
+
+Itanium suggests transforming catch chains into switch case like blocks. The
+unwinder will load `R0` with the exception object and `R1` with the case number
+for the switch block. That is why the first instruction in the assembly above
+is a comparison between `R1` and the number 1. If that fails, the unwind
+sequence is continued by executing `__cxa_end_cleanup`. Otherwise, the code
+jumps to the start of the catch denoted with `__cxa_begin_catch` and ends with
+a call to `__cxa_end_catch`.
+
+Methods {#methods}
+=======================
+
+To fulfill the objectives of this paper, we will develop a C++ application
+designed with diverse functions. This application will self-assess during
+runtime by examining its exception table entries and the exception table. The
+investigation aims to provide insights into:
+
+- Function exception rank
+- LSDA size and the sizes of its sections (when applicable)
+
+Function Exception Rank {#rank}
+-------------------------------
+
+In this study, "function exception rank" refers to a classification scheme for
+functions based on their exception metadata's memory demands. This ranking
+system identifies:
+
+1.  **No index entry**: Indicates absence of an index table entry for functions
+    where the compiler ascertains no exception propagation, utilizing zero
+    memory.
+2. **Inlined index data:** Involves direct inlining of unwind information into
+    the index entry, negating the need for additional exception table space.
+    This configuration employs an SU16 personality, consistently occupying 8
+    bytes due to ARM exception index ABI specifications.
+3. **Table unwind instructions:** Applies when unwind details cannot be
+    condensed into the 4-byte content section of the index, requiring 16 to 20
+    bytes—8 bytes for the index and 8 to 12 bytes for unwind instructions.
+4. **GCC LSDA:** Positioned in the exception table, this data structure,
+    although memory-intensive, effectively manages try/catch blocks and cleanup
+    areas, starting at 28 bytes and increasing based on complexity.
+
+Experimental Setup {#setup}
+----------------------------
+
+- **Toolchain**: Arm Gnu Toolchain 12.3
+- **Instruction Set**: ARM THUMB 2
+- **Target Processor**: Cortex M3 (executed on an stm32f103c8 microcontroller)
+- **libc**: picolibc (to re-enable exception handling in the compiler)
+- **Project URL**: https://github.com/kammce/cpp-papers/tree/main/noexcept
+- **Debugging Technology**: `PyOCD` + `ST-Link V2`
+
+All C++ functions in or used by an exhibit in the results section will be
+marked as `[[gnu::noinline]]` in order to prevent the compiler from inlining
+the functions.
+
+Results {#results}
+====================
+
+All functions with the prefix "noexcept" are noexcept functions.
+
+There exists an array called side_effect which is a `std::array` of
+`volatile std::uint32_t` numbers. This is to prevent the compiler from deducing
+the results of functions and garbage collecting most of the code.
+
+Any exhibits with multiple rankings has been found to change their ranking
+depending on the position of the function in the code. For example, if the
+compiler sees that function A is inlined noexcept and the next function in the
+code (or symbol table) is function B and it has the same inline noexcept entry,
+the compiler will merge the two enteries and make a single entry for function
+B's. Because the next entry will be the next function with differing exception
+content, the when the binary search is performed to find the required entry,
+anything between function B and the next entry will have the same information.
+During unwinding, the selected entry will be function A if function B ever has
+an exception propagation reaches it. The behavior is the same, regardless.
+There maybe exhibits where this behavior also exists but was not tested in this
+paper.
+
+Exhibit 1: Leaf Function {#exhibit-1}
+-----------------------
+
+Definition of `my_struct_t`:
+
+```C++
+struct my_struct_t
+{
+  int a;
+  int b;
+  int c;
+};
+```
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void noexcept_initialize(my_struct_t& my_struct) noexcept
+        {
+            my_struct.a = 17;
+            my_struct.b = 22;
+            my_struct.c = 33;
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void initialize(my_struct_t& my_struct)
+        {
+            my_struct.a = 5;
+            my_struct.b = 15;
+            my_struct.c = 15;
+        }
+        ```
+        </td>
+    </tr>
+
+    <tr>
+        <td>
+        Rank 1: no entry
+        <br />
+        Rank 2: inlined noexcept
+        </td>
+        <td>
+        Rank 1: no entry
+        <br />
+        Rank 2: inlined noexcept
+        </td>
+    </tr>
+</table>
+  <figcaption>Leaf Functions</figcaption>
+</figure>
+
+Exhibit 2: Calling only noexcept functions {#exhibit-2}
+--------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_all_noexcept() noexcept
+        {
+            noexcept_bar();
+            noexcept_baz();
+            noexcept_qaz();
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_all_noexcept()
+        {
+            noexcept_bar();
+            noexcept_baz();
+            noexcept_qaz();
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 2: inlined noexcept
+        </td>
+        <td>
+        Rank 1: No entry
+        Rank 2: inlined noexcept
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling all noexcept functions</figcaption>
+</figure>
+
+Exhibit 3: Calling both except and noexcept functions {#exhibit-3}
+-------------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_mixed() noexcept
+        {
+            noexcept_bar();
+            baz();
+            noexcept_qaz();
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_mixed()
+        {
+            noexcept_bar();
+            baz();
+            noexcept_qaz();
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+        <td>
+        Rank 3: Table Personality
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling a mix of except & noexcept functions</figcaption>
+</figure>
+
+Exhibit 4: Functions calling only except function {#exhibit-4}
+---------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_all_except() noexcept
+        {
+            bar();
+            baz();
+            qaz();
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_all_except()
+        {
+            bar();
+            baz();
+            qaz();
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+        <td>
+        Rank 3: Table Personality
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling only except functions</figcaption>
+</figure>
+
+
+Exhibit 5: Calling only noexcept in try/catch block {#exhibit-5}
+-----------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_all_noexcept_in_try_catch() noexcept
+        {
+            try {
+                noexcept_bar();
+                noexcept_baz();
+            } catch (...) {
+                side_effect[9] = side_effect[9] + 1;
+            }
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_all_noexcept_in_try_catch()
+        {
+            try {
+                noexcept_bar();
+                noexcept_baz();
+            } catch (...) {
+                side_effect[9] = side_effect[9] + 1;
+            }
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 2: Inlined noexcept
+        </td>
+        <td>
+        Rank 1: No entry
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling only noexcept in try scope</figcaption>
+</figure>
+
+Exhibit 6: Calling both except & noexcept in try/catch block {#exhibit-6}
+--------------------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_mixed_in_try_catch() noexcept
+        {
+            try {
+                bar();
+                noexcept_baz();
+            } catch (...) {
+                side_effect[15] = side_effect[15] + 1;
+            }
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calling_mixed_in_try_catch()
+        {
+            try {
+                bar();
+                noexcept_baz();
+            } catch (...) {
+                side_effect[22] = side_effect[22] + 1;
+            }
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling mixed function types in a try scope</figcaption>
+</figure>
+
+Exhibit 7: Calling only except in try/catch block {#exhibit-7}
+---------------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_except_in_try_catch() noexcept
+        {
+            try {
+                bar();
+                baz();
+            } catch (...) {
+                side_effect[17] = side_effect[17] + 1;
+            }
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_except_in_try_catch()
+        {
+            try {
+                bar();
+                baz();
+            } catch (...) {
+                side_effect[8] = side_effect[8] + 1;
+            }
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+    </tr>
+</table>
+  <figcaption>Calling only except functions in a try scope</figcaption>
+</figure>
+
+
+Exhibit 8: Leaf class function {#exhibit-8}
+--------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        my_class::state_t
+        my_class::noexcept_state() noexcept
+        {
+            return m_state;
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        my_class::state_t
+        my_class::state()
+        {
+            return m_state;
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 1: No entry
+        </td>
+        <td>
+        Rank 1: No entry
+        </td>
+    </tr>
+</table>
+  <figcaption>Typical function getter</figcaption>
+</figure>
+
+Exhibit 9: Calling only noexcept with non-trivially destructable objects present {#exhibit-9}
+--------------------------------------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_all_noexcept() noexcept
+        {
+            non_trivial_dtor obj1;
+            obj1.noexcept_action();
+            non_trivial_dtor obj2;
+            obj1.noexcept_action();
+            obj2.noexcept_action();
+            non_trivial_dtor obj3;
+            obj1.noexcept_action();
+            obj2.noexcept_action();
+            obj3.noexcept_action();
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_all_noexcept()
+        {
+            non_trivial_dtor obj1;
+            obj1.noexcept_action();
+            non_trivial_dtor obj2;
+            obj1.noexcept_action();
+            obj2.noexcept_action();
+            non_trivial_dtor obj3;
+            obj1.noexcept_action();
+            obj2.noexcept_action();
+            obj3.noexcept_action();
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 1: No Entry
+        </td>
+        <td>
+        Rank 1: No Entry
+        </td>
+    </tr>
+</table>
+  <figcaption>
+  Calling only noexcept functions with non-trivially destructable objects
+  present.
+  </figcaption>
+</figure>
+
+Exhibit 10: Calling only except with non-trivially destructable objects present {#exhibit-10}
+---------------------------------------------------------------------
+
+<figure>
+<table>
+    <tr>
+        <td>
+        ```C++
+        void
+        noexcept_calls_all_except() noexcept
+        {
+            non_trivial_dtor obj1;
+            obj1.action();
+            non_trivial_dtor obj2;
+            obj1.action();
+            obj2.action();
+            non_trivial_dtor obj3;
+            obj1.action();
+            obj2.action();
+            obj3.action();
+        }
+        ```
+        </td>
+        <td>
+        ```C++
+        void
+        except_calls_all_except()
+        {
+            non_trivial_dtor obj1;
+            obj1.action();
+            non_trivial_dtor obj2;
+            obj1.action();
+            obj2.action();
+            non_trivial_dtor obj3;
+            obj1.action();
+            obj2.action();
+            obj3.action();
+        }
+        ```
+        </td>
+    </tr>
+    <tr>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+        <td>
+        Rank 4: GCC LSDA
+        </td>
+    </tr>
+</table>
+  <figcaption>
+  Calling only except with non-trivially destructable objects present
+  </figcaption>
+</figure>
+
+Exhibit 11 {#exhibit-11}
+-----------------------
+
+In this experiment, the function that is noexcept is moved down for each of the
+following functions. So in experiment 2, the first class function call to obj1
+will become `noexcept_action()` and the second call after constructing obj2
+will be `action()`. All other calls will be `noexcept_action()`.
+
+```C++
+namespace dtor {
+void
+noexcept_calls_experiment1() noexcept
+{
+    non_trivial_dtor obj1;
+    obj1.action(); // experiment 1: calls action()
+    non_trivial_dtor obj2;
+    obj1.noexcept_action(); // experiment 2: calls action()
+    obj2.noexcept_action(); // experiment 3: calls action()
+    non_trivial_dtor obj3;
+    obj1.noexcept_action(); // experiment 4: calls action()
+    obj2.noexcept_action(); // experiment 5: calls action()
+    obj3.noexcept_action(); // experiment 6: calls action()
+}
+}
+```
+
+- Noexcept:
+    - Experiment 1-7: Rank 4 GCC LSDA
+- Except:
+    - Experiment 1-7: Rank 4 GCC LSDA
+
+LSDA Data {#lsda-data}
+-----------------------
+
+The data below is sorted by its total size. The total size only accounts for
+the size of the memory in the LSDA region. It does not include the exception
+index entry nor the cleanup region in the function.
+
+<table border="1">
+  <thead>
+    <tr>
+      <th>Function Name</th>
+      <th>Total Size</th>
+      <th>Max Action Offset</th>
+      <th>Type Table Offset</th>
+      <th>Call Site count</th>
+      <th>Call Site size</th>
+      <th>Action Table count</th>
+      <th>Action Table size</th>
+      <th>Type Table count</th>
+      <th>Type Table size</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>except_calling_mixed_in_try_catch</td>
+      <td>34</td>
+      <td>1</td>
+      <td>17</td>
+      <td>2</td>
+      <td>8</td>
+      <td>3</td>
+      <td>6</td>
+      <td>1</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>except_calls_except_in_try_catch</td>
+      <td>34</td>
+      <td>1</td>
+      <td>17</td>
+      <td>2</td>
+      <td>8</td>
+      <td>3</td>
+      <td>6</td>
+      <td>1</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_all_except</td>
+      <td>32</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment7</td>
+      <td>32</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>noexcept_calls_mixed_in_try_catch</td>
+      <td>30</td>
+      <td>1</td>
+      <td>13</td>
+      <td>1</td>
+      <td>4</td>
+      <td>3</td>
+      <td>6</td>
+      <td>1</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>noexcept_calls_except_in_try_catch</td>
+      <td>30</td>
+      <td>1</td>
+      <td>13</td>
+      <td>1</td>
+      <td>4</td>
+      <td>3</td>
+      <td>6</td>
+      <td>1</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment1</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment2</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment3</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment4</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment5</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::except_calls_experiment6</td>
+      <td>24</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2</td>
+      <td>8</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>noexcept_calls_mixed</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>noexcept_calls_all_except</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_all_except</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment1</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment2</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment3</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment4</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment5</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment6</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>dtor::noexcept_calls_experiment7</td>
+      <td>16</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+
+Cleanup Landing Pads {#cleanup-landing-pads}
+---------------------------------------------
+
+<div class="note">
+<p>None of the `noexcept` functions had cleanup landing pads.</p>
+</div>
+
+```asm
+08001140 <dtor::except_calls_all_except()>:
+# ...
+8001176: a803        add r0, sp, #12
+8001178: f7ff ff8c   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800117c: a802        add r0, sp, #8
+800117e: f7ff ff89   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001182: a801        add r0, sp, #4
+8001184: f7ff ff86   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001188: f000 fb26   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+080012fc <dtor::except_calls_experiment1()>:
+# ...
+8001330: a801        add r0, sp, #4
+8001332: f7ff feaf   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001336: f000 fa4f   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+0800133c <dtor::except_calls_experiment2()>:
+# ...
+8001370: a802        add r0, sp, #8
+8001372: f7ff fe8f   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001376: a801        add r0, sp, #4
+8001378: f7ff fe8c   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800137c: f000 fa2c   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+08001380 <dtor::except_calls_experiment3()>:
+# ...
+80013b4: a802        add r0, sp, #8
+80013b6: f7ff fe6d   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80013ba: a801        add r0, sp, #4
+80013bc: f7ff fe6a   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80013c0: f000 fa0a   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+080013c4 <dtor::except_calls_experiment4()>:
+# ...
+80013f8: a803        add r0, sp, #12
+80013fa: f7ff fe4b   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80013fe: a802        add r0, sp, #8
+8001400: f7ff fe48   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001404: a801        add r0, sp, #4
+8001406: f7ff fe45   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800140a: f000 f9e5   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+08001410 <dtor::except_calls_experiment5()>:
+# ...
+8001444: a803        add r0, sp, #12
+8001446: f7ff fe25   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800144a: a802        add r0, sp, #8
+800144c: f7ff fe22   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001450: a801        add r0, sp, #4
+8001452: f7ff fe1f   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001456: f000 f9bf   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+0800145c <dtor::except_calls_experiment6()>:
+# ...
+8001490: a803        add r0, sp, #12
+8001492: f7ff fdff   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+8001496: a802        add r0, sp, #8
+8001498: f7ff fdfc   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+800149c: a801        add r0, sp, #4
+800149e: f7ff fdf9   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80014a2: f000 f999   bl  80017d8 <__cxa_end_cleanup>
+```
+
+```asm
+080014a8 <dtor::except_calls_experiment7()>:
+# ...
+80014de: a803        add r0, sp, #12
+80014e0: f7ff fdd8   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80014e4: a802        add r0, sp, #8
+80014e6: f7ff fdd5   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80014ea: a801        add r0, sp, #4
+80014ec: f7ff fdd2   bl  8001094 <dtor::non_trivial_dtor::~non_trivial_dtor()>
+80014f0: f000 f972   bl  80017d8 <__cxa_end_cleanup>
+```
+
+The cleanup regions follow a very consistent pattern. Set `R0` to the address
+of the object to be destroyed and call the destructor. It takes 2 bytes to load
+`R0`, 4 bytes to call a destructor, and 4 bytes to call `__cxa_end_cleanup`.
+So the total cost in bytes for the number of objects that must be destroyed in
+a frame is `size(n) = 4 + 6n`.
+
+Analysis {#analysis}
+=====================
+
+Leaf Functions {#leaf-functions}
+---------------------------------
+
+Consider [[#exhibit-1]] and [[#exhibit-8]]. Both exhibits contain leaf
+functions. [[#exhibit-8]] has no exception index entry. This makes sense since
+the function does not throw an exception and does not call any other functions.
+There is no possibility that an exception will ever propagate from such a
+function. Thus their index entries can be removed.
+
+If the functions of [[#exhibit-1]] are moved between other functions that have
+exception index entries, then they will both get exception index entries with
+an inlined noexcept marker. GCC is able to deduce that the except function
+initialize never calls other functions and thus is de facto noexcept. But
+rather than eliminate the entry, the compiler decides to provide an entry for
+both.
+
+These entries do not need to exist and being able to eliminate them would free
+up 8 bytes of space per function. This seems like an opportunity for the
+compiler to be improved.
+
+Calling only noexcept functions {#calling-only-noexcept-functions}
+-------------------------------------------------------------------
+
+[[#exhibit-2]] contains functions calling only noexcept functions. The noexcept
+function in this exhibit gets a rank 4 whereas the except function just gets a
+rank 3. In both cases, the compiler should have opted to eliminate their
+exception data entirely. These functions are never reachable via exception
+propagation.
+
+The compiler has chosen data structures for these two functions way above what
+is necessary for them.
+
+Compiler Making Bad Choices {#compiler-making-bad-decisions}
+------------------------------------------------------------
+
+[[#exhibit-3]] and [[#exhibit-4]] match each other in their rankings. Both
+either use an except function or a mix of except and noexcept functions. None
+of the functions require cleanup or have any catch blocks.
+
+Yet, GCC chooses a mostly empty LSDA data structure for the noexcept functions.
+An inline noexcept flag would have worked as there is no cleanup work or
+try-catch blocks check scopes for.
+
+The except functions have unwind instructions added to the exception table,
+meaning these very simple functions were not unwindable in a 3 unwind
+instructions. Taking a look at the disassembly below.
+
+```asm
+080015a8 <except_calls_all_except()>:
+80015a8: b508        push  {r3, lr}
+80015aa: f7ff fcdd   bl  8000f68 <bar()>
+80015ae: f7ff fcfb   bl  8000fa8 <baz()>
+80015b2: e8bd 4008   ldmia.w sp!, {r3, lr}
+80015b6: f7ff bd17   b.w 8000fe8 <qaz()>
+80015ba: bf00        nop
+```
+
+This function disassembly does two strange things. It pushes `R3` onto the
+stack which requires 2 bytes of unwind information to be unwound. It also
+performs some stack manipulation before calling the last function. If the
+compiler had chosen to use `R4` rather than `R3` and called the `qaz()`
+function normally, then only a single byte of instruction memory would be
+required to unwind it, specifically `0b10101000` (`0xA8`). This optimization
+could bring the exception rank to rank 2.
+
+All of these functions should have rank 2, inlined noexcept flag and inline
+personality.
+
+Except poisoning {#except-poisoning}
+-------------------------------------
+
+Consistent with all exhibits, is that calling a single function that is not
+noexcept results in the function's rank becoming at least rank 2. If every
+function called in a function is noexcept, the compiler can deduce that no
+exception will ever propagate from the function. But it only takes a single
+except function to completely break that deduction. So the benefits of calling
+noexcept functions is poisoned with the introduction of any except function.
+
+Reducing Clean up landing Pads {#reducing-cleanup-landing-pads}
+----------------------------------------------------------------
+
+Noexcept function eliminated the cleanup regions completely. By marking a C++
+function noexcept, the cleanup region is completely removed because it could
+never be reachable.
+
+If an except function is called after the construction of an object, then that
+object must be added to the cleanup landing pad area. This goes for any number
+of objects constructed before a call to an except function.
+
+Eliminating try/catch Blocks {#eliminating-try-catch-blocks}
+--------------------------------------------------------------
+
+[[#exhibit-5]] is interesting in that the compiler chooses a rank 2 for the
+noexcept function and rank 1 for the except function. Note that the rank 1 may
+be due to the position of the functions in the source code. But the compiler
+did choose suitably small options for the code. The disassembly for both is
+minimal and does not include any record of the catch blocks. The compiler was
+able to deduce that the catch blocks were dead code and eliminated them.
+
+```asm
+080015bc <noexcept_calls_all_noexcept_in_try_catch()>:
+80015bc: b508        push  {r3, lr}
+80015be: f7ff fc9d   bl  8000efc <noexcept_bar()>
+80015c2: e8bd 4008   ldmia.w sp!, {r3, lr}
+80015c6: f7ff bcab   b.w 8000f20 <noexcept_baz()>
+80015ca: bf00        nop
+```
+
+```asm
+080015cc <except_calls_all_noexcept_in_try_catch()>:
+80015cc: b508        push  {r3, lr}
+80015ce: f7ff fc95   bl  8000efc <noexcept_bar()>
+80015d2: e8bd 4008   ldmia.w sp!, {r3, lr}
+80015d6: f7ff bca3   b.w 8000f20 <noexcept_baz()>
+80015da: bf00        nop
+```
+
+[[#exhibit-6]] and [[#exhibit-7]] both show no real difference introduced by
+calling noexcept functions due to the except poisoning mentioned earlier. Here
+you can see the disassembly of noexcept_calls_mixed_in_try_catch with the
+Itanium catch block APIs `__cxa_begin_catch` and `__cxa_end_catch`.
+
+```asm
+080015dc <noexcept_calls_mixed_in_try_catch()>:
+80015dc: b508        push  {r3, lr}
+80015de: f7ff fcc3   bl  8000f68 <bar()>
+80015e2: e8bd 4008   ldmia.w sp!, {r3, lr}
+80015e6: f7ff bc9b   b.w 8000f20 <noexcept_baz()>
+80015ea: f000 f9b9   bl  8001960 <__cxa_begin_catch>
+80015ee: 4a03        ldr r2, [pc, #12]
+80015f0: 6bd3        ldr r3, [r2, #60] @ 0x3c
+80015f2: 3301        adds  r3, #1
+80015f4: 63d3        str r3, [r2, #60] @ 0x3c
+80015f6: f000 f9f3   bl  80019e0 <__cxa_end_catch>
+80015fa: bd08        pop {r3, pc}
+80015fc: 20000b60  .word 0x20000b60
+```
+
+Calling all noexcept functions within a try block seems like a code smell,
+because it begs the question of, "what exception were you expecting to catch
+with these APIs?"
+
+Conclusion {#conclusion}
+==========================
+
+Noexcept can be useful in cases such as where a strong exception guarantee is
+needed. But in terms of code gen, it's a mixed bag. In general, adding the
+`noexcept` to a function reduces its code gen.
+
+The cases where GCC was able to optimize the code gen would be:
+
+1. Removing destructor landing pads
+2. Removing dead catch blocks
+
+The second benefit is mostly a code smell. Removing destructor landing pads is
+useful, but making a function noexcept for this purpose seems a bit extreme.
+
+Noexcept also tends to cause GCC to change what would have been 0 bytes of
+exception data into requiring a mostly empty LSDA section and exception index
+entry. The benefits of noexcept only occur as an edge case. An edge case that
+breaks once a single function capable of throwing an exception is called within
+a function.
+
+We want to give the compiler as much information and guarantees as possible so
+it can help generate more efficient code for us, but do we really need noexcept
+for that?
+
+Given the data in this study, I believe the right choice is to look for
+improvements in toolchains. Changes to code should not be necessary because
+there are many of the improvements to code gen that can be performed without
+the need to change source code.
+
+Improve data structure selection {#improve-selection}
+------------------------------------------------------
+
+The exception rank for noexcept functions could be optimized to choosen lower
+rank options. Here are a few checks that could be performed:
+
+1.  Is it a leaf? No entry
+2.  Calls only noexcept? No entry
+3.  Is noexcept and does not have a try block? inline noexcept
+4.  Is noexcept with non-trivial destructors? inline noexcept
+
+Group functions with identical exception entries {#group-functions}
+--------------------------------------------------------------------
+
+GCC merges identical exception entries when the functions are right next to
+each other in the source code. The linker could generate a first run of the
+exception index, collect all of the identical entries, and group all functions
+with identical entries. Now all of the identical entires can be merged into a
+single entry.
+
+Deduce noexcept in functions {#deduce-noexcept}
+------------------------------------------------------
+
+Many function are noexcept without being marked as such. They call other
+functions that, but down the entire call graph of a function, no function ever
+throws an exception. What if, rather than marking such functions as noexcept,
+the linker is able to determine if a function is exception propagating or not.
+This would require a form of link time optimization, but it should be
+technically feasible. GCC can already generate a callgraph using the flag
+`-fcallgraph-info`. So what if the linker evaluate all functions that it has
+full knowledge about and determines which functions throw. Using that
+information, determine which paths could never throw an exception, and mark all
+paths outside of this as noexcept. Leaf functions get an implicit `noexcept`
+marking. Functions that call functions that never result in an exception being
+thrown would also be implicitly marked as `noexcept`. For APIs outside of an
+application, like a shared library, the linker will have to assume that a
+function that is not marked `noexcept`, does propagate an exception.
+
+With something like this, a C++ application could get the benefits of marking
+many of its non-throwing functions as noexcept but with the flexibility to
+change your mind later.
