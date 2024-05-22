@@ -3,27 +3,28 @@ Title: Impacts of noexept on ARM table based exception metadata
 Shortname: PXXXX
 Revision: 0
 Status: DTR
-Date: 2024-05-21
+Date: 2024-05-22
 Group: WG21
 Audience: LEWG, LWG
 URL: http://wg21.link/PXXXXr0
 Editor: Khalil Estell, khalil.estell@sjsu.edu
-Abstract: C++'s exceptions as the primary method of transmitting errors from
-          detection location to handlers. There is one particular keyword that
-          is considered by many to help optimize their code but also yields
-          some powerful consequences if the property is encountered at runtime.
-          That keyword is "noexcept". Its primary function is to declare to the
-          compiler that no exception shall be emitted from this function. A lot
-          of claims have been made that by having noexcept on a large number of
-          your functions, the compiler can perform optimizations based on this
-          information. This paper dives into how noexcept affects the exception
-          metadata for "zero cost" table based exceptions. The ARM EHABI and
-          GCC/Clang/HP-Itanium table formats as an example. The data collected
-          indicates that metadata selection for functions is currently
-          suboptimal and could do with some improvements. Suggested
-          improvements are selecting equivalent but smaller data structures for
-          functions that could benefit from it and a link time evaluation of
-          all functions in order to determine if they are de facto noexcept.
+Abstract: C++ exceptions serve as the core mechanism for propagating errors
+          from their detection points to respective handlers. The `noexcept`
+          keyword informs the compiler that a function is guaranteed to not
+          emit exceptions. This assurance is purported to enable compilers to
+          undertake specific optimizations that can enhance code gen
+          significantly. This paper examines the influence of the noexcept
+          keyword on the management of exception metadata, specifically within
+          the framework of "zero-cost" table-based Itanium exception handling
+          mechanisms utilized by the ARM Exception Handling ABI (ARM EHABI).
+          Our findings reveal that the current strategies for exception
+          metadata selection for functions by the GCC toolchain is often
+          suboptimal. We propose targeted improvements including the adoption
+          of more compact data structures where beneficial, and link-time
+          analysis to determine the implicit noexcept status of functions. This
+          approach would provide the desired effect of using noexcept in as
+          many places as possible without the cost of marking each function as
+          such.
 Repository: kammce/cpp-papers
 Dark Mode: no
 Markup Shorthands: markdown on
@@ -32,28 +33,29 @@ Markup Shorthands: markdown on
 Objective {#objective}
 =======================
 
-Collect information on the impact of noexcept and calling noexcept functions in
-different situations to determine how noexcept can affect an application's
-binary size via the exception index, exception table, and the codegen of the
-function.
+The primary goal of this study is to evaluate the impact of the noexcept
+keyword and the invocation of noexcept functions under various conditions.
+Specifically, the research aims to assess how noexcept influences an
+application's binary size through modifications in the exception index,
+exception table, and the code generation of the function.
 
-The questions to be answered would be:
+The following questions will be addressed:
 
-  1. What effect does labeling a function noexcept have on its metadata?
-  2. What effect does calling noexcept functions have on this function's
-     metadata?
-  3. What effect occurs when a try block calls entirely noexcept functions?
-  4. How does calling noexcept functions affect functions with objects with
-     non-trivial destructors?
+1.  How does labeling a function as noexcept alter its metadata?
+2.  What changes occur in a function's metadata when it calls noexcept
+    functions?
+3.  What implications arise when a try block exclusively calls noexcept
+    functions?
+4.  How does the interaction with noexcept functions affect functions that
+    manage objects with non-trivial destructors?
 
-Finally, it will provide some suggestions on what can be done to improve code
-gen in an application.
+The research will conclude with recommendations for optimizing code generation.
 
 Background {#background}
 ========================
 
 This paper will focus on the GCC/Clang and Itanium table based exceptions on
-ARM. The writer is experienced with this form of exception handling and this
+ARM. The author is experienced with this form of exception handling and this
 architecture. The insights provided here should be consistent with other forms
 of table based exception handling. All data related to the exception data
 structures can be found at this link:
@@ -69,12 +71,14 @@ HP Exception Handling Tables aC++ A.01.15.
 ARM Exception Index {#arm-exception-index}
 ------------------------------------------
 
-Each function that participates in exception unwinding will have its own entry
-in the exception index. The ARM Exception Handling ABI specifies that each
-entry contains two 32-bit words. First word is a position relative to the 31
-bit offset to the function's address, the second word is either inline unwind
-instructions or a position relative 31 bit offset to the exception metadata for
-the function.
+In the ARM Exception Handling ABI, each function involved in exception
+unwinding is assigned a unique entry within the exception index. This entry
+comprises two 32-bit words:
+
+-   The first word represents a position-relative, 31-bit offset to the
+    function's starting address.
+-   The second word contains either inline unwind instructions or a
+    position-relative, 31-bit offset to the function's exception metadata.
 
 ```c++
 struct arm_index_entry
@@ -84,36 +88,46 @@ struct arm_index_entry
 };
 ```
 
-If the 31st bit of content is a `1`, then the content field contains inline
-unwind instructions with up to 3 bytes worth of unwind instructions. If content
-equals the value `0x1` then it represents `CANNOT UNWIND` flag. This indicates
-to the exception runtime that this function cannot be unwound and should
-terminate. If the 31st bit is a `0` then content are a 31-bit position relative
-offset (`prel31`).
+The interpretation of the content field is determined by the status of the 31st
+bit:
 
-To derive the absolute address of a `prel31` offset do the following:
+-   If the 31st bit is set to `1`, the content field holds inline unwind
+    instructions, accommodating up to three bytes of such instructions.
+-   If the content is exactly `0x1`, it signifies the `CANNOT UNWIND` flag,
+    instructing the exception runtime that unwinding cannot proceed for this
+    function. The runtime will terminate.
+-   If the 31st bit is `0`, the remaining bits represent a `prel31` offset, a
+    31-bit position-relative offset.
 
-1. Sign extended value from 31 bits to 32-bits
-2. Cast to `int32_t`, the proper 32-bit offset number.
-3. Add the offset to the address of the content field within the exception index
+To compute the absolute address from a `prel31` offset, perform the following
+steps:
 
-The resulting value is the absolute address of the exception data for this function.
+1.  Sign-extend the value from 31 bits to a full 32-bit integer.
+2.  Convert the result into a `int32_t` to obtain the correct 32-bit signed
+    offset.
+3.  Add this offset to the base address of the content field within the
+    exception index.
+
+This process yields the absolute address where the function's exception
+metadata is located.
 
 ARM Unwind Instructions {#arm-unwind-instructions}
 ---------------------------------------------------
 
-ARM EHABI unwind instructions are encoded in single byte chunks. ARM THUMB2
-instructions which are used  by the Cortex M series of micro controller
-processors, are 2 to 4 bytes in size. Typical ARM instruction which is 4-bytes
-per instruction. Thus the unwind instructions are half to a quarter the size of
-regular instructions. The instructions only need about a byte to perform all of
-the tasks of unwinding a frame which only involves:
+ARM EHABI unwind instructions are compactly encoded in single-byte increments.
+In contrast, ARM THUMB2 instructions, utilized by the Cortex M series of
+microcontrollers, range from 2 to 4 bytes in size, with a typical ARM
+instruction occupying 4 bytes. Consequently, unwind instructions are
+significantly smaller, ranging from half to a quarter the size of standard
+instructions. This compact size is sufficient for executing all necessary tasks
+involved in unwinding a frame, which include:
 
-   1. Deallocating local variables (subtracting the stack)
-   2. Popping registers from the stack back into the CPU
-   3. Popping special purpose registers from stack into Coprocessor
+1.  Deallocating local variables by adjusting the stack pointer.
+2.  Restoring general-purpose registers from the stack to the CPU.
+3.  Transferring special-purpose register contents from the stack to the
+    appropriate coprocessor.
 
-A few of the common and important unwind instructions are listed below:
+Below are some of the common unwind instructions:
 
 <table>
    <caption>ARM Unwind Instructions</caption>
@@ -147,80 +161,84 @@ A few of the common and important unwind instructions are listed below:
    </tr>
 </table>
 
-ARM personality routine {#arm-personality-routine}
----------------------------------------------------
+ARM Personality Routine {#arm-personality-routine}
+-------------------------------------------------------
 
-There are 3 forms of ARM personality:
+There are three forms of ARM personality:
 
-- SU16: short unwind with 16-bit descriptor scope
-- LU16: long unwind with 16-bit descriptor scope
-- LU32: long unwind with 32-bit descriptor scope
+- **SU16**: short unwind with 16-bit descriptor scope.
+- **LU16**: long unwind with 16-bit descriptor scope.
+- **LU32**: long unwind with 32-bit descriptor scope.
 
-Personality data descriptors describe regions of code within a function and
-what action to be taken if the program counter is within one of those
-regions.
+Personality data descriptors detail regions within a function and the actions to take if the program counter is within one of these regions.
 
-This document will not go over ARM descriptors because GCC tends to
-use its own generic, cross platform, and compressed resentation of this data
-called the GCC C++ LSDA (language specific data area) over the architecture
-specific variant.
+This document does not cover the ARM specific cleanup and catch descriptors as GCC typically employs a generic, cross-platform, and compressed representation of this data known as the GCC C++ LSDA (Language Specific Data Area).
 
-<figure>
-  <img style="width: 100%; height: auto" src="assets/su16-personality-detailed.png" alt="Detailed image description at the bits within the short unwind personality with 16-bit scope."></img>
-  <figcaption>Detailed SU16 Personality Routine</figcaption>
-</figure>
+No ARM personality routines can exceed 7 bytes of unwind instructions, as detailed in [Appendix C of ehabi32.rst](https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst).
 
-<figure>
-  <img style="width: 100%; height: auto" src="assets/lu16.png" alt="long unwind personality with 16-bit scope."></img>
-  <figcaption>LU16 Personality Routine</figcaption>
-</figure>
+**SU16 Layout**:
 
-<figure>
-  <img style="width: 100%; height: auto" src="assets/lu32.png" alt="long unwind personality with 32-bit scope."></img>
-  <figcaption>LU32 Personality Routine</figcaption>
-</figure>
+- `[31]`: Personality indicator. Set to 1 if the data is a personality. Set to 0 if the content is a prel31 offset to additional data.
+- `[30:28]`: Reserved.
+- `[27:24]`: Personality index. For SU16, this is 0.
+- `[23:16]`: Unwind instruction 1.
+- `[15:8]`: Unwind instruction 2.
+- `[7:0]`: Unwind instruction 3.
 
-ARM personality routines can be no longer than 7 unwind instructions. (See
-Appendix C in
-<a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst">
-ehabi32.rst
-</a>)
+**LU16 & LU32 Layout**:
+
+- **First word**:
+    - `[31]`: Personality indicator. Set to 1 if the data is a personality. Set to 0 if the content is a prel31 offset to additional data.
+    - `[30:28]`: Reserved.
+    - `[27:24]`: Personality index, can be 0, 1, or 2.
+    - `[23:16]`: Number of words following this one. Valid values are 1 or 2.
+    - `[15:8]`: Unwind instruction 1.
+    - `[7:0]`: Unwind instruction 2.
+- **Second word**:
+    - `[31:24]`: Unwind instruction 3.
+    - `[23:16]`: Unwind instruction 4.
+    - `[15:8]`: Unwind instruction 5.
+    - `[7:0]`: Unwind instruction 6.
+- **Third word (if applicable)**:
+    - `[31:24]`: Unwind instruction 7.
+    - `[23:16]`: `0xB0` (finish).
+    - `[15:8]`: `0xB0` (finish).
+    - `[7:0]`: `0xB0` (finish).
 
 GCC Language Specific Data Area (LSDA) {#lsda}
 ---------------------------------------------------
 
-The ARM Exception Handling ABI (EHABI) for exception handling permits the use
-of non-personality data as exception data, enabling support for
-language-specific exception handling mechanisms. Specifically, the EHABI allows
-for the integration of custom language-specific data areas within the exception
-tables. This is leveraged by GCC, which replaces the default
-architecture-specific descriptors with its own. This capability is rooted in a
-feature of the Itanium ABI, which allows different languages to provide their
-own functions for unwinding their specific versions of call frames. As a
-result, not only can C++ exceptions be handled using GCC's language-specific
-data area, but other languages like Java could also utilize this area to manage
-their exceptions.
+The ARM Exception Handling ABI (EHABI) for exception handling allows the
+integration of non-personality data as exception data, facilitating support for
+language-specific exception handling mechanisms. The EHABI permits the
+inclusion of custom language-specific data areas within the exception tables, a
+feature extensively utilized by GCC to substitute the default
+architecture-specific descriptors with its own. This functionality derives from
+a feature in the Itanium ABI, enabling various languages to implement their own
+functions for unwinding specific call frames. Consequently, not only can C++
+exceptions be managed using GCC's language-specific data area, but other
+languages such as Java can also employ this area to control their exceptions.
 
-For GCC's LSDA format is:
+For GCC's LSDA (Language Specific Data Area) format:
 
-1.  **Personality Function:** 32-bit value. The MSB is set to 0. Contains a
-    `prel31` offset to the handler of this function.
-2.  **Personality Data:** Architecture specific unwind instructions.
-3.  **Header:** Variable length sequence of bytes describing where DRAWF
-    information is, where the type table ends, and how long the call site
-    region is. The dwarf location and type table entries can be labelled with
-    an omit flag `0xFF` to indicate they are empty.
-4.  **Call Site Table:** Contains information about the regions of the function
-    associated with try scopes and cleanup. It provides the  regions of the
-    function that have specific
-    actions associated with them as well as where the landing pad of the
-    action is if any action is taken.
-5.  **Action table:** Provides the index(s) to the catch-able types for the call
-    site region. It also indicates if there is cleanup to be done.
-6.  **Type Table:** Holds the unique set of `std::type_info` addresses of
-    catch-able types in the function.
+1.  **Personality Function:** 32-bit value with the MSB set to 0. It contains a
+    `prel31` offset to the function's handler, typically `__gxx_personality_v0`
+    in GCC.
+2.  **Personality Data:** Architecture-specific unwind instructions.
+3.  **Header:** A variable-length sequence of bytes that delineates where DWARF
+    information is located, the end of the type table, and the extent of the
+    call site region. Entries in the DWARF location and type table can be
+    marked with an omit flag `0xFF` to indicate their absence.
+4.  **Call Site Table:** Details the regions of the function associated with
+    try scopes and cleanup. This table specifies the areas of the function that
+    have particular actions assigned, as well as the location of the landing
+    pad if an action is taken.
+5.  **Action Table:** Lists the indices to the types that can be caught for
+    each call site region and specifies whether cleanup is required.
+6.  **Type Table:** Contains a unique set of `std::type_info` addresses for the
+    types that can be caught within the function.
 
-To learn more about how these regions are layed out, see:
+To gain a deeper understanding of how these regions are structured, refer to:
 <a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf">
 HP Exception Handling Tables aC++ A.01.15.
 </a>
@@ -274,15 +292,16 @@ Destructor landing pads {#dtor-landing-pads}
   <figcaption>Isolated Destructor Cleanup Region</figcaption>
 </figure>
 
-These are regions within a function that the exception runtime will jump to
-when executing the destructors for this scope. Pictured above are ARM Thumb2
-instructions. Each instruction loads the address of the object on the stack
-into `R0`, which is the register representing the first parameter for a
-function. It then calls the object's destructor. The sequence is opposite of the
-construction of the objects. The Itanium API that is called to jump back into
-the exception unwind flow is `__cxa_end_cleanup()`. Depending on what scope the
-code was in when the exception began propagating, will change at what point the
-program counter jumps into the function.
+Within this function, there are designated regions that the exception runtime
+targets to execute destructors for the current frame. The figures above depict
+ARM Thumb2 instructions. These instructions specifically load the address of an
+object from the stack into `R0`, which acts as the register for the first
+parameter in a function call, then the object's destructor is invoked. This
+process is the reverse of the construction sequence of the objects. The Itanium
+API utilized to re-enter the exception unwind flow after all necessary
+destructors are called is `__cxa_end_cleanup()`. The point at which the program
+counter re-enters the function is influenced by the scope where the exception
+propagation originated.
 
 Catch landing pads {#catch-landing-pads}
 -----------------------------------------
@@ -302,21 +321,24 @@ Catch landing pads {#catch-landing-pads}
     <figcaption>Catch landing pad example</figcaption>
 </figure>
 
-Itanium suggests transforming catch chains into switch case like blocks. The
-unwinder will load `R0` with the exception object and `R1` with the case number
-for the switch block. That is why the first instruction in the assembly above
-is a comparison between `R1` and the number 1. If that fails, the unwind
-sequence is continued by executing `__cxa_end_cleanup`. Otherwise, the code
-jumps to the start of the catch denoted with `__cxa_begin_catch` and ends with
-a call to `__cxa_end_catch`.
+According to Itanium, catch chains should be transformed into switch-case-like
+blocks. The unwinder sets `R0` with the exception object and `R1` with the case
+number for the corresponding block. The initial instruction in the assembly
+above, comparing `R1` with the number 1, determines the path of execution. If
+the comparison fails, the sequence proceeds to execute `__cxa_end_cleanup`,
+continuing the exception propagation. If the comparison is successful, the flow
+transitions to `__cxa_begin_catch`, executes the catch block, and concludes
+with `__cxa_end_catch`.
 
 Methods {#methods}
 =======================
 
-To fulfill the objectives of this paper, we will develop a C++ application
-designed with diverse functions. This application will self-assess during
-runtime by examining its exception table entries and the exception table. The
-investigation aims to provide insights into:
+To fulfill the objectives of this paper, a C++ application will be designed
+with a set of functions featuring noexcept and "except" functions in different
+usages. "except" in this case as a short hand for non-noexcept function. This
+application will self-assess during runtime by examining its exception table
+entries and the exception table. The investigation aims to provide insights
+into:
 
 - Function exception rank
 - LSDA size and the sizes of its sections (when applicable)
@@ -324,9 +346,8 @@ investigation aims to provide insights into:
 Function Exception Rank {#rank}
 -------------------------------
 
-In this study, "function exception rank" refers to a classification scheme for
-functions based on their exception metadata's memory demands. This ranking
-system identifies:
+"function exception rank" refers to a classification scheme for functions based
+on their exception metadata's memory demands. This ranking system identifies:
 
 1.  **No index entry**: Indicates absence of an index table entry for functions
     where the compiler ascertains no exception propagation, utilizing zero
@@ -416,7 +437,6 @@ struct my_struct_t
         ```
         </td>
     </tr>
-
     <tr>
         <td>
         Rank 1: no entry
@@ -745,6 +765,7 @@ Exhibit 9: Calling only noexcept with non-trivially destructable objects present
     <tr>
         <td>
         ```C++
+        namespace dtor {
         void
         noexcept_calls_all_noexcept() noexcept
         {
@@ -758,10 +779,12 @@ Exhibit 9: Calling only noexcept with non-trivially destructable objects present
             obj2.noexcept_action();
             obj3.noexcept_action();
         }
+        }
         ```
         </td>
         <td>
         ```C++
+        namespace dtor {
         void
         except_calls_all_noexcept()
         {
@@ -774,6 +797,7 @@ Exhibit 9: Calling only noexcept with non-trivially destructable objects present
             obj1.noexcept_action();
             obj2.noexcept_action();
             obj3.noexcept_action();
+        }
         }
         ```
         </td>
@@ -801,6 +825,7 @@ Exhibit 10: Calling only except with non-trivially destructable objects present 
     <tr>
         <td>
         ```C++
+        namespace dtor {
         void
         noexcept_calls_all_except() noexcept
         {
@@ -814,10 +839,12 @@ Exhibit 10: Calling only except with non-trivially destructable objects present 
             obj2.action();
             obj3.action();
         }
+        }
         ```
         </td>
         <td>
         ```C++
+        namespace dtor {
         void
         except_calls_all_except()
         {
@@ -830,6 +857,7 @@ Exhibit 10: Calling only except with non-trivially destructable objects present 
             obj1.action();
             obj2.action();
             obj3.action();
+        }
         }
         ```
         </td>
@@ -882,9 +910,9 @@ noexcept_calls_experiment1() noexcept
 LSDA Data {#lsda-data}
 -----------------------
 
-The data below is sorted by its total size. The total size only accounts for
-the size of the memory in the LSDA region. It does not include the exception
-index entry nor the cleanup region in the function.
+The data below is sorted by total size. The total size only accounts for the
+size of the memory in the LSDA region. It does not include the exception index
+entry nor the cleanup region in the function.
 
 <table border="1">
   <thead>
@@ -1281,27 +1309,26 @@ Consider [[#exhibit-1]] and [[#exhibit-8]]. Both exhibits contain leaf
 functions. [[#exhibit-8]] has no exception index entry. This makes sense since
 the function does not throw an exception and does not call any other functions.
 There is no possibility that an exception will ever propagate from such a
-function. Thus their index entries can be removed.
+function. Thus their index entries can be omitted from the table.
 
 If the functions of [[#exhibit-1]] are moved between other functions that have
 exception index entries, then they will both get exception index entries with
-an inlined noexcept marker. GCC is able to deduce that the except function
-initialize never calls other functions and thus is de facto noexcept. But
+an inlined noexcept marker. GCC is able to deduce that the `initialize`
+functions never calls other functions and thus is de facto noexcept. But
 rather than eliminate the entry, the compiler decides to provide an entry for
 both.
 
-These entries do not need to exist and being able to eliminate them would free
-up 8 bytes of space per function. This seems like an opportunity for the
-compiler to be improved.
+These entries do not need to exist and being able to omit them would free up 8
+bytes of space per function. This seems like an opportunity for the compiler to
+be improved.
 
 Calling only noexcept functions {#calling-only-noexcept-functions}
 -------------------------------------------------------------------
 
 [[#exhibit-2]] contains functions calling only noexcept functions. The noexcept
 function in this exhibit gets a rank 4 whereas the except function just gets a
-rank 3. In both cases, the compiler should have opted to eliminate their
-exception data entirely. These functions are never reachable via exception
-propagation.
+rank 3. In both cases, the compiler should have opted to omit the exception
+data entirely. These functions are never reachable via exception propagation.
 
 The compiler has chosen data structures for these two functions way above what
 is necessary for them.
@@ -1314,12 +1341,12 @@ either use an except function or a mix of except and noexcept functions. None
 of the functions require cleanup or have any catch blocks.
 
 Yet, GCC chooses a mostly empty LSDA data structure for the noexcept functions.
-An inline noexcept flag would have worked as there is no cleanup work or
-try-catch blocks check scopes for.
+An inline noexcept flag would have worked as there is no objects to cleanup or
+catch blocks to consider.
 
-The except functions have unwind instructions added to the exception table,
-meaning these very simple functions were not unwindable in a 3 unwind
-instructions. Taking a look at the disassembly below.
+The except functions have enough unwind instructions to warrant their data
+being placed in the exception table. Meaning these very simple functions were
+not unwindable in a 3 unwind instructions.
 
 ```asm
 080015a8 <except_calls_all_except()>:
@@ -1342,36 +1369,38 @@ could bring the exception rank to rank 2.
 All of these functions should have rank 2, inlined noexcept flag and inline
 personality.
 
-Except poisoning {#except-poisoning}
+Except Poisoning {#except-poisoning}
 -------------------------------------
 
-Consistent with all exhibits, is that calling a single function that is not
-noexcept results in the function's rank becoming at least rank 2. If every
-function called in a function is noexcept, the compiler can deduce that no
-exception will ever propagate from the function. But it only takes a single
-except function to completely break that deduction. So the benefits of calling
-noexcept functions is poisoned with the introduction of any except function.
+A consistent observation across all exhibits is that calling a single except
+function, elevates the function's rank to at least rank 2, accompanied by the
+necessary cleanup landing pads.
 
-Reducing Clean up landing Pads {#reducing-cleanup-landing-pads}
-----------------------------------------------------------------
+Thus, the advantages of calling `noexcept` functions are negated by the
+introduction of any except function.
 
-Noexcept function eliminated the cleanup regions completely. By marking a C++
-function noexcept, the cleanup region is completely removed because it could
-never be reachable.
+Reducing Cleanup Landing Pads {#reducing-cleanup-landing-pads}
+-------------------------------------------------------------------
 
-If an except function is called after the construction of an object, then that
-object must be added to the cleanup landing pad area. This goes for any number
-of objects constructed before a call to an except function.
+Marking a C++ function as `noexcept` completely eliminates the cleanup regions.
+Such regions become unreachable, making their inclusion unnecessary.
 
-Eliminating try/catch Blocks {#eliminating-try-catch-blocks}
---------------------------------------------------------------
+However, in an except functions, if the only functions called after the
+construction of an object are `noexcept` functions, then the destructor call
+for that object can be omitted from the cleanup landing area. Calling a single
+except function afterwards will result in the object's destructor call being
+added to the cleanup landing pad.
 
-[[#exhibit-5]] is interesting in that the compiler chooses a rank 2 for the
-noexcept function and rank 1 for the except function. Note that the rank 1 may
-be due to the position of the functions in the source code. But the compiler
-did choose suitably small options for the code. The disassembly for both is
-minimal and does not include any record of the catch blocks. The compiler was
-able to deduce that the catch blocks were dead code and eliminated them.
+Eliminating Try/Catch Blocks {#eliminating-try-catch-blocks}
+------------------------------------------------------------
+
+[[#exhibit-5]] presents an interesting scenario where the compiler assigns a
+rank of 2 to the `noexcept` function and a rank of 1 to the except function.
+The rank of 1 may be influenced by the placement of the functions within the
+source code. Nevertheless, the compiler opted for suitably minimal options for
+the code. The disassembly for both is minimal and excludes any record of the
+catch blocks. The compiler successfully determined that the catch blocks were
+unreachable and omitted them.
 
 ```asm
 080015bc <noexcept_calls_all_noexcept_in_try_catch()>:
@@ -1391,10 +1420,14 @@ able to deduce that the catch blocks were dead code and eliminated them.
 80015da: bf00        nop
 ```
 
-[[#exhibit-6]] and [[#exhibit-7]] both show no real difference introduced by
-calling noexcept functions due to the except poisoning mentioned earlier. Here
-you can see the disassembly of noexcept_calls_mixed_in_try_catch with the
-Itanium catch block APIs `__cxa_begin_catch` and `__cxa_end_catch`.
+Note that calling all noexcept functions within a try block is a code smell.
+It begs the question of, "what exception were you expecting to catch from these
+APIs?"
+
+[[#exhibit-6]] and [[#exhibit-7]] both show no difference introduced by
+labeling the functions as noexcept, due to the except poisoning mentioned
+earlier. You can see the disassembly of `noexcept_calls_mixed_in_try_catch`
+with the Itanium catch block APIs `__cxa_begin_catch` and `__cxa_end_catch`.
 
 ```asm
 080015dc <noexcept_calls_mixed_in_try_catch()>:
@@ -1412,10 +1445,6 @@ Itanium catch block APIs `__cxa_begin_catch` and `__cxa_end_catch`.
 80015fc: 20000b60  .word 0x20000b60
 ```
 
-Calling all noexcept functions within a try block seems like a code smell,
-because it begs the question of, "what exception were you expecting to catch
-with these APIs?"
-
 Conclusion {#conclusion}
 ==========================
 
@@ -1428,18 +1457,20 @@ The cases where GCC was able to optimize the code gen would be:
 1. Removing destructor landing pads
 2. Removing dead catch blocks
 
-The second benefit is mostly a code smell. Removing destructor landing pads is
-useful, but making a function noexcept for this purpose seems a bit extreme.
+Removing destructor landing pads is useful, but making a function noexcept for
+this purpose seems a bit extreme.
 
 Noexcept also tends to cause GCC to change what would have been 0 bytes of
 exception data into requiring a mostly empty LSDA section and exception index
-entry. The benefits of noexcept only occur as an edge case. An edge case that
-breaks once a single function capable of throwing an exception is called within
-a function.
+entry.
 
-We want to give the compiler as much information and guarantees as possible so
-it can help generate more efficient code for us, but do we really need noexcept
-for that?
+The benefits of noexcept only occur as an edge case. An edge case that breaks
+once a single function capable of throwing an exception is called within that
+function.
+
+We want to give the compiler as much information and guarantees as possible to
+coax it into generating more efficient code for us, but do we really need
+`noexcept` for that?
 
 Given the data in this study, I believe the right choice is to look for
 improvements in toolchains. Changes to code should not be necessary because
@@ -1462,28 +1493,29 @@ Group functions with identical exception entries {#group-functions}
 
 GCC merges identical exception entries when the functions are right next to
 each other in the source code. The linker could generate a first run of the
-exception index, collect all of the identical entries, and group all functions
-with identical entries. Now all of the identical entires can be merged into a
-single entry.
+exception index, collect all of the identical entries, and then group all
+functions with identical entries. Now all of the identical entires can be
+merged into a single entry, reducing the size of the table.
 
-Deduce noexcept in functions {#deduce-noexcept}
+Deduce `noexcept` in Functions {#deduce-noexcept}
 ------------------------------------------------------
 
-Many function are noexcept without being marked as such. They call other
-functions that, but down the entire call graph of a function, no function ever
-throws an exception. What if, rather than marking such functions as noexcept,
-the linker is able to determine if a function is exception propagating or not.
-This would require a form of link time optimization, but it should be
-technically feasible. GCC can already generate a callgraph using the flag
-`-fcallgraph-info`. So what if the linker evaluate all functions that it has
-full knowledge about and determines which functions throw. Using that
-information, determine which paths could never throw an exception, and mark all
-paths outside of this as noexcept. Leaf functions get an implicit `noexcept`
-marking. Functions that call functions that never result in an exception being
-thrown would also be implicitly marked as `noexcept`. For APIs outside of an
-application, like a shared library, the linker will have to assume that a
-function that is not marked `noexcept`, does propagate an exception.
+Many functions operate as `noexcept` without being explicitly marked as such;
+they call other functions, and down the entire call graph, no function ever
+throws an exception. Instead of manually marking such functions as `noexcept`,
+it is feasible for the linker to determine whether a function is exception
+propagating. GCC, for instance, can already generate a call graph using the
+`-fcallgraph-info` flag. The proposed idea is for the linker to evaluate all
+functions it has full assembly information of and determine which ones throw
+exceptions. Using this information, the linker could identify functions that
+could never throw an exception and automatically mark all them `noexcept`. Leaf
+functions would receive an implicit `noexcept` marking. Similarly, if an except
+functions calls a set of functions that have implicitly marked `noexcept` then
+that function could also be marked as implicitely noexcept. For APIs external
+to an application, such as those in a shared library, the linker would have to
+assume that any function not explicitly marked as `noexcept` does propagate
+exceptions.
 
-With something like this, a C++ application could get the benefits of marking
-many of its non-throwing functions as noexcept but with the flexibility to
-change your mind later.
+Implementing such a mechanism would allow a C++ application to benefit from
+marking many of its non-throwing functions as `noexcept`, while retaining the
+flexibility to adjust this designation as needed in the future.
