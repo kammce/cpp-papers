@@ -65,6 +65,7 @@ noexcept_calls_all_noexcept_in_try_catch() noexcept
 gen_side_effect()
 {
   side_effect[14] = side_effect[14] - 2;
+  return side_effect[14];
 }
 
 [[gnu::noinline]] void
