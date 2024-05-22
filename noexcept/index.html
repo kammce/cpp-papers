@@ -1564,7 +1564,7 @@ Possible extra rowspan handling
   <meta content="Bikeshed version d765c696b, updated Fri Mar 8 15:58:52 2024 -0800" name="generator">
   <link href="http://wg21.link/PXXXXr0" rel="canonical">
   <link href="https://isocpp.org/favicon.ico" rel="icon">
-  <meta content="f2f41e870eecb4ccdb0fb5a097da9865bfad29ff" name="revision">
+  <meta content="71bc3616a2f3b7a6d1286d749a76d91eeaf605bb" name="revision">
 <style>/* Boilerplate: style-autolinks */
 .css.css, .property.property, .descriptor.descriptor {
     color: var(--a-normal-text);
@@ -1908,7 +1908,7 @@ c-[il] { color: #000000 } /* Literal.Number.Integer.Long */
   <div class="head">
    <p data-fill-with="logo"></p>
    <h1 class="p-name no-ref" id="title">PXXXXR0<br>Impacts of noexept on ARM table based exception metadata</h1>
-   <h2 class="no-num no-toc no-ref heading settled" id="profile-and-date"><span class="content">Draft Technical Report, <time class="dt-updated" datetime="2024-05-21">2024-05-21</time></span></h2>
+   <h2 class="no-num no-toc no-ref heading settled" id="profile-and-date"><span class="content">Draft Technical Report, <time class="dt-updated" datetime="2024-05-22">2024-05-22</time></span></h2>
    <div data-fill-with="spec-metadata">
     <dl>
      <dt>This version:
@@ -1926,22 +1926,22 @@ c-[il] { color: #000000 } /* Literal.Number.Integer.Long */
   </div>
   <div class="p-summary" data-fill-with="abstract">
    <h2 class="no-num no-toc no-ref heading settled" id="abstract"><span class="content">Abstract</span></h2>
-   <p>C++'s exceptions as the primary method of transmitting errors from
-detection location to handlers. There is one particular keyword that
-is considered by many to help optimize their code but also yields
-some powerful consequences if the property is encountered at runtime.
-That keyword is "noexcept". Its primary function is to declare to the
-compiler that no exception shall be emitted from this function. A lot
-of claims have been made that by having noexcept on a large number of
-your functions, the compiler can perform optimizations based on this
-information. This paper dives into how noexcept affects the exception
-metadata for "zero cost" table based exceptions. The ARM EHABI and
-GCC/Clang/HP-Itanium table formats as an example. The data collected
-indicates that metadata selection for functions is currently
-suboptimal and could do with some improvements. Suggested
-improvements are selecting equivalent but smaller data structures for
-functions that could benefit from it and a link time evaluation of
-all functions in order to determine if they are de facto noexcept.</p>
+   <p>C++ exceptions serve as the core mechanism for propagating errors
+from their detection points to respective handlers. The <code class="highlight"><c- k>noexcept</c-></code> keyword informs the compiler that a function is guaranteed to not
+emit exceptions. This assurance is purported to enable compilers to
+undertake specific optimizations that can enhance code gen
+significantly. This paper examines the influence of the noexcept
+keyword on the management of exception metadata, specifically within
+the framework of "zero-cost" table-based Itanium exception handling
+mechanisms utilized by the ARM Exception Handling ABI (ARM EHABI).
+Our findings reveal that the current strategies for exception
+metadata selection for functions by the GCC toolchain is often
+suboptimal. We propose targeted improvements including the adoption
+of more compact data structures where beneficial, and link-time
+analysis to determine the implicit noexcept status of functions. This
+approach would provide the desired effect of using noexcept in as
+many places as possible without the cost of marking each function as
+such.</p>
   </div>
   <nav data-fill-with="table-of-contents" id="toc">
    <h2 class="no-num no-toc no-ref" id="contents">Table of Contents</h2>
@@ -1952,7 +1952,7 @@ all functions in order to determine if they are de facto noexcept.</p>
      <ol class="toc">
       <li><a href="#arm-exception-index"><span class="secno">2.1</span> <span class="content">ARM Exception Index</span></a>
       <li><a href="#arm-unwind-instructions"><span class="secno">2.2</span> <span class="content">ARM Unwind Instructions</span></a>
-      <li><a href="#arm-personality-routine"><span class="secno">2.3</span> <span class="content">ARM personality routine</span></a>
+      <li><a href="#arm-personality-routine"><span class="secno">2.3</span> <span class="content">ARM Personality Routine</span></a>
       <li><a href="#lsda"><span class="secno">2.4</span> <span class="content">GCC Language Specific Data Area (LSDA)</span></a>
       <li><a href="#dtor-landing-pads"><span class="secno">2.5</span> <span class="content">Destructor landing pads</span></a>
       <li><a href="#catch-landing-pads"><span class="secno">2.6</span> <span class="content">Catch landing pads</span></a>
@@ -1986,92 +1986,112 @@ all functions in order to determine if they are de facto noexcept.</p>
       <li><a href="#leaf-functions"><span class="secno">5.1</span> <span class="content">Leaf Functions</span></a>
       <li><a href="#calling-only-noexcept-functions"><span class="secno">5.2</span> <span class="content">Calling only noexcept functions</span></a>
       <li><a href="#compiler-making-bad-decisions"><span class="secno">5.3</span> <span class="content">Compiler Making Bad Choices</span></a>
-      <li><a href="#except-poisoning"><span class="secno">5.4</span> <span class="content">Except poisoning</span></a>
-      <li><a href="#reducing-cleanup-landing-pads"><span class="secno">5.5</span> <span class="content">Reducing Clean up landing Pads</span></a>
-      <li><a href="#eliminating-try-catch-blocks"><span class="secno">5.6</span> <span class="content">Eliminating try/catch Blocks</span></a>
+      <li><a href="#except-poisoning"><span class="secno">5.4</span> <span class="content">Except Poisoning</span></a>
+      <li><a href="#reducing-cleanup-landing-pads"><span class="secno">5.5</span> <span class="content">Reducing Cleanup Landing Pads</span></a>
+      <li><a href="#eliminating-try-catch-blocks"><span class="secno">5.6</span> <span class="content">Eliminating Try/Catch Blocks</span></a>
      </ol>
     <li>
      <a href="#conclusion"><span class="secno">6</span> <span class="content">Conclusion</span></a>
      <ol class="toc">
       <li><a href="#improve-selection"><span class="secno">6.1</span> <span class="content">Improve data structure selection</span></a>
       <li><a href="#group-functions"><span class="secno">6.2</span> <span class="content">Group functions with identical exception entries</span></a>
-      <li><a href="#deduce-noexcept"><span class="secno">6.3</span> <span class="content">Deduce noexcept in functions</span></a>
+      <li><a href="#deduce-noexcept"><span class="secno">6.3</span> <span class="content">Deduce <code class="highlight"><c- k>noexcept</c-></code> in Functions</span></a>
      </ol>
    </ol>
   </nav>
   <main>
    <h2 class="heading settled" data-level="1" id="objective"><span class="secno">1. </span><span class="content">Objective</span><a class="self-link" href="#objective"></a></h2>
-   <p>Collect information on the impact of noexcept and calling noexcept functions in
-different situations to determine how noexcept can affect an application’s
-binary size via the exception index, exception table, and the codegen of the
-function.</p>
-   <p>The questions to be answered would be:</p>
+   <p>The primary goal of this study is to evaluate the impact of the noexcept
+keyword and the invocation of noexcept functions under various conditions.
+Specifically, the research aims to assess how noexcept influences an
+application’s binary size through modifications in the exception index,
+exception table, and the code generation of the function.</p>
+   <p>The following questions will be addressed:</p>
    <ol>
     <li data-md>
-     <p>What effect does labeling a function noexcept have on its metadata?</p>
+     <p>How does labeling a function as noexcept alter its metadata?</p>
     <li data-md>
-     <p>What effect does calling noexcept functions have on this function’s
- metadata?</p>
+     <p>What changes occur in a function’s metadata when it calls noexcept
+functions?</p>
     <li data-md>
-     <p>What effect occurs when a try block calls entirely noexcept functions?</p>
+     <p>What implications arise when a try block exclusively calls noexcept
+functions?</p>
     <li data-md>
-     <p>How does calling noexcept functions affect functions with objects with
- non-trivial destructors?</p>
+     <p>How does the interaction with noexcept functions affect functions that
+manage objects with non-trivial destructors?</p>
    </ol>
-   <p>Finally, it will provide some suggestions on what can be done to improve code
-gen in an application.</p>
+   <p>The research will conclude with recommendations for optimizing code generation.</p>
    <h2 class="heading settled" data-level="2" id="background"><span class="secno">2. </span><span class="content">Background</span><a class="self-link" href="#background"></a></h2>
    <p>This paper will focus on the GCC/Clang and Itanium table based exceptions on
-ARM. The writer is experienced with this form of exception handling and this
+ARM. The author is experienced with this form of exception handling and this
 architecture. The insights provided here should be consistent with other forms
 of table based exception handling. All data related to the exception data
 structures can be found at this link: <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst"> ARM-software/abi-aa: ehabi32.rst </a></p>
    <p>The GCC LSDA is an exception to this which can be found in the document <a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf"> HP Exception Handling Tables aC++ A.01.15. </a></p>
    <h3 class="heading settled" data-level="2.1" id="arm-exception-index"><span class="secno">2.1. </span><span class="content">ARM Exception Index</span><a class="self-link" href="#arm-exception-index"></a></h3>
-   <p>Each function that participates in exception unwinding will have its own entry
-in the exception index. The ARM Exception Handling ABI specifies that each
-entry contains two 32-bit words. First word is a position relative to the 31
-bit offset to the function’s address, the second word is either inline unwind
-instructions or a position relative 31 bit offset to the exception metadata for
-the function.</p>
+   <p>In the ARM Exception Handling ABI, each function involved in exception
+unwinding is assigned a unique entry within the exception index. This entry
+comprises two 32-bit words:</p>
+   <ul>
+    <li data-md>
+     <p>The first word represents a position-relative, 31-bit offset to the
+function’s starting address.</p>
+    <li data-md>
+     <p>The second word contains either inline unwind instructions or a
+position-relative, 31-bit offset to the function’s exception metadata.</p>
+   </ul>
 <pre class="language-c++ highlight"><c- k>struct</c-> <c- nc>arm_index_entry</c->
 <c- p>{</c->
  <c- n>std</c-><c- o>::</c-><c- b>uint32_t</c-> <c- n>function</c-><c- p>;</c->
  <c- n>std</c-><c- o>::</c-><c- b>uint32_t</c-> <c- n>content</c-><c- p>;</c->
 <c- p>};</c->
 </pre>
-   <p>If the 31st bit of content is a <code class="highlight"><c- mi>1</c-></code>, then the content field contains inline
-unwind instructions with up to 3 bytes worth of unwind instructions. If content
-equals the value <code class="highlight"><c- mh>0x1</c-></code> then it represents <code class="highlight"><c- n>CANNOT</c-> <c- n>UNWIND</c-></code> flag. This indicates
-to the exception runtime that this function cannot be unwound and should
-terminate. If the 31st bit is a <code class="highlight"><c- mi>0</c-></code> then content are a 31-bit position relative
-offset (<code class="highlight"><c- n>prel31</c-></code>).</p>
-   <p>To derive the absolute address of a <code class="highlight"><c- n>prel31</c-></code> offset do the following:</p>
+   <p>The interpretation of the content field is determined by the status of the 31st
+bit:</p>
+   <ul>
+    <li data-md>
+     <p>If the 31st bit is set to <code class="highlight"><c- mi>1</c-></code>, the content field holds inline unwind
+instructions, accommodating up to three bytes of such instructions.</p>
+    <li data-md>
+     <p>If the content is exactly <code class="highlight"><c- mh>0x1</c-></code>, it signifies the <code class="highlight"><c- n>CANNOT</c-> <c- n>UNWIND</c-></code> flag,
+instructing the exception runtime that unwinding cannot proceed for this
+function. The runtime will terminate.</p>
+    <li data-md>
+     <p>If the 31st bit is <code class="highlight"><c- mi>0</c-></code>, the remaining bits represent a <code class="highlight"><c- n>prel31</c-></code> offset, a
+31-bit position-relative offset.</p>
+   </ul>
+   <p>To compute the absolute address from a <code class="highlight"><c- n>prel31</c-></code> offset, perform the following
+steps:</p>
    <ol>
     <li data-md>
-     <p>Sign extended value from 31 bits to 32-bits</p>
+     <p>Sign-extend the value from 31 bits to a full 32-bit integer.</p>
     <li data-md>
-     <p>Cast to <code class="highlight"><c- b>int32_t</c-></code>, the proper 32-bit offset number.</p>
+     <p>Convert the result into a <code class="highlight"><c- b>int32_t</c-></code> to obtain the correct 32-bit signed
+offset.</p>
     <li data-md>
-     <p>Add the offset to the address of the content field within the exception index</p>
+     <p>Add this offset to the base address of the content field within the
+exception index.</p>
    </ol>
-   <p>The resulting value is the absolute address of the exception data for this function.</p>
+   <p>This process yields the absolute address where the function’s exception
+metadata is located.</p>
    <h3 class="heading settled" data-level="2.2" id="arm-unwind-instructions"><span class="secno">2.2. </span><span class="content">ARM Unwind Instructions</span><a class="self-link" href="#arm-unwind-instructions"></a></h3>
-   <p>ARM EHABI unwind instructions are encoded in single byte chunks. ARM THUMB2
-instructions which are used  by the Cortex M series of micro controller
-processors, are 2 to 4 bytes in size. Typical ARM instruction which is 4-bytes
-per instruction. Thus the unwind instructions are half to a quarter the size of
-regular instructions. The instructions only need about a byte to perform all of
-the tasks of unwinding a frame which only involves:</p>
+   <p>ARM EHABI unwind instructions are compactly encoded in single-byte increments.
+In contrast, ARM THUMB2 instructions, utilized by the Cortex M series of
+microcontrollers, range from 2 to 4 bytes in size, with a typical ARM
+instruction occupying 4 bytes. Consequently, unwind instructions are
+significantly smaller, ranging from half to a quarter the size of standard
+instructions. This compact size is sufficient for executing all necessary tasks
+involved in unwinding a frame, which include:</p>
    <ol>
     <li data-md>
-     <p>Deallocating local variables (subtracting the stack)</p>
+     <p>Deallocating local variables by adjusting the stack pointer.</p>
     <li data-md>
-     <p>Popping registers from the stack back into the CPU</p>
+     <p>Restoring general-purpose registers from the stack to the CPU.</p>
     <li data-md>
-     <p>Popping special purpose registers from stack into Coprocessor</p>
+     <p>Transferring special-purpose register contents from the stack to the
+appropriate coprocessor.</p>
    </ol>
-   <p>A few of the common and important unwind instructions are listed below:</p>
+   <p>Below are some of the common unwind instructions:</p>
    <table>
     <caption>ARM Unwind Instructions</caption>
     <tbody>
@@ -2097,74 +2117,112 @@ the tasks of unwinding a frame which only involves:</p>
       <td>10110000
       <td>Finish
    </table>
-   <h3 class="heading settled" data-level="2.3" id="arm-personality-routine"><span class="secno">2.3. </span><span class="content">ARM personality routine</span><a class="self-link" href="#arm-personality-routine"></a></h3>
-   <p>There are 3 forms of ARM personality:</p>
+   <h3 class="heading settled" data-level="2.3" id="arm-personality-routine"><span class="secno">2.3. </span><span class="content">ARM Personality Routine</span><a class="self-link" href="#arm-personality-routine"></a></h3>
+   <p>There are three forms of ARM personality:</p>
    <ul>
     <li data-md>
-     <p>SU16: short unwind with 16-bit descriptor scope</p>
+     <p><strong>SU16</strong>: short unwind with 16-bit descriptor scope.</p>
     <li data-md>
-     <p>LU16: long unwind with 16-bit descriptor scope</p>
+     <p><strong>LU16</strong>: long unwind with 16-bit descriptor scope.</p>
     <li data-md>
-     <p>LU32: long unwind with 32-bit descriptor scope</p>
+     <p><strong>LU32</strong>: long unwind with 32-bit descriptor scope.</p>
    </ul>
-   <p>Personality data descriptors describe regions of code within a function and
-what action to be taken if the program counter is within one of those
-regions.</p>
-   <p>This document will not go over ARM descriptors because GCC tends to
-use its own generic, cross platform, and compressed resentation of this data
-called the GCC C++ LSDA (language specific data area) over the architecture
-specific variant.</p>
-   <figure>
-     <img alt="Detailed image description at the bits within the short unwind personality with 16-bit scope." height="780" src="assets/su16-personality-detailed.png" style="width: 100%; height: auto" width="2096"> 
-    <figcaption>Detailed SU16 Personality Routine</figcaption>
-   </figure>
-   <figure>
-     <img alt="long unwind personality with 16-bit scope." height="319" src="assets/lu16.png" style="width: 100%; height: auto" width="2052"> 
-    <figcaption>LU16 Personality Routine</figcaption>
-   </figure>
-   <figure>
-     <img alt="long unwind personality with 32-bit scope." height="318" src="assets/lu32.png" style="width: 100%; height: auto" width="2039"> 
-    <figcaption>LU32 Personality Routine</figcaption>
-   </figure>
-   <p>ARM personality routines can be no longer than 7 unwind instructions. (See
-Appendix C in <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst"> ehabi32.rst </a>)</p>
+   <p>Personality data descriptors detail regions within a function and the actions to take if the program counter is within one of these regions.</p>
+   <p>This document does not cover the ARM specific cleanup and catch descriptors as GCC typically employs a generic, cross-platform, and compressed representation of this data known as the GCC C++ LSDA (Language Specific Data Area).</p>
+   <p>No ARM personality routines can exceed 7 bytes of unwind instructions, as detailed in <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst">Appendix C of ehabi32.rst</a>.</p>
+   <p><strong>SU16 Layout</strong>:</p>
+   <ul>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>31</c-><c- p>]</c-></code>: Personality indicator. Set to 1 if the data is a personality. Set to 0 if the content is a prel31 offset to additional data.</p>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>30</c-><c- o>:</c-><c- mi>28</c-><c- p>]</c-></code>: Reserved.</p>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>27</c-><c- o>:</c-><c- mi>24</c-><c- p>]</c-></code>: Personality index. For SU16, this is 0.</p>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>23</c-><c- o>:</c-><c- mi>16</c-><c- p>]</c-></code>: Unwind instruction 1.</p>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>15</c-><c- o>:</c-><c- mi>8</c-><c- p>]</c-></code>: Unwind instruction 2.</p>
+    <li data-md>
+     <p><code class="highlight"><c- p>[</c-><c- mi>7</c-><c- o>:</c-><c- mi>0</c-><c- p>]</c-></code>: Unwind instruction 3.</p>
+   </ul>
+   <p><strong>LU16 &amp; LU32 Layout</strong>:</p>
+   <ul>
+    <li data-md>
+     <p><strong>First word</strong>:</p>
+     <ul>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>31</c-><c- p>]</c-></code>: Personality indicator. Set to 1 if the data is a personality. Set to 0 if the content is a prel31 offset to additional data.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>30</c-><c- o>:</c-><c- mi>28</c-><c- p>]</c-></code>: Reserved.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>27</c-><c- o>:</c-><c- mi>24</c-><c- p>]</c-></code>: Personality index, can be 0, 1, or 2.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>23</c-><c- o>:</c-><c- mi>16</c-><c- p>]</c-></code>: Number of words following this one. Valid values are 1 or 2.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>15</c-><c- o>:</c-><c- mi>8</c-><c- p>]</c-></code>: Unwind instruction 1.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>7</c-><c- o>:</c-><c- mi>0</c-><c- p>]</c-></code>: Unwind instruction 2.</p>
+     </ul>
+    <li data-md>
+     <p><strong>Second word</strong>:</p>
+     <ul>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>31</c-><c- o>:</c-><c- mi>24</c-><c- p>]</c-></code>: Unwind instruction 3.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>23</c-><c- o>:</c-><c- mi>16</c-><c- p>]</c-></code>: Unwind instruction 4.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>15</c-><c- o>:</c-><c- mi>8</c-><c- p>]</c-></code>: Unwind instruction 5.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>7</c-><c- o>:</c-><c- mi>0</c-><c- p>]</c-></code>: Unwind instruction 6.</p>
+     </ul>
+    <li data-md>
+     <p><strong>Third word (if applicable)</strong>:</p>
+     <ul>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>31</c-><c- o>:</c-><c- mi>24</c-><c- p>]</c-></code>: Unwind instruction 7.</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>23</c-><c- o>:</c-><c- mi>16</c-><c- p>]</c-></code>: <code class="highlight"><c- mh>0xB0</c-></code> (finish).</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>15</c-><c- o>:</c-><c- mi>8</c-><c- p>]</c-></code>: <code class="highlight"><c- mh>0xB0</c-></code> (finish).</p>
+      <li data-md>
+       <p><code class="highlight"><c- p>[</c-><c- mi>7</c-><c- o>:</c-><c- mi>0</c-><c- p>]</c-></code>: <code class="highlight"><c- mh>0xB0</c-></code> (finish).</p>
+     </ul>
+   </ul>
    <h3 class="heading settled" data-level="2.4" id="lsda"><span class="secno">2.4. </span><span class="content">GCC Language Specific Data Area (LSDA)</span><a class="self-link" href="#lsda"></a></h3>
-   <p>The ARM Exception Handling ABI (EHABI) for exception handling permits the use
-of non-personality data as exception data, enabling support for
-language-specific exception handling mechanisms. Specifically, the EHABI allows
-for the integration of custom language-specific data areas within the exception
-tables. This is leveraged by GCC, which replaces the default
-architecture-specific descriptors with its own. This capability is rooted in a
-feature of the Itanium ABI, which allows different languages to provide their
-own functions for unwinding their specific versions of call frames. As a
-result, not only can C++ exceptions be handled using GCC’s language-specific
-data area, but other languages like Java could also utilize this area to manage
-their exceptions.</p>
-   <p>For GCC’s LSDA format is:</p>
+   <p>The ARM Exception Handling ABI (EHABI) for exception handling allows the
+integration of non-personality data as exception data, facilitating support for
+language-specific exception handling mechanisms. The EHABI permits the
+inclusion of custom language-specific data areas within the exception tables, a
+feature extensively utilized by GCC to substitute the default
+architecture-specific descriptors with its own. This functionality derives from
+a feature in the Itanium ABI, enabling various languages to implement their own
+functions for unwinding specific call frames. Consequently, not only can C++
+exceptions be managed using GCC’s language-specific data area, but other
+languages such as Java can also employ this area to control their exceptions.</p>
+   <p>For GCC’s LSDA (Language Specific Data Area) format:</p>
    <ol>
     <li data-md>
-     <p><strong>Personality Function:</strong> 32-bit value. The MSB is set to 0. Contains a <code class="highlight"><c- n>prel31</c-></code> offset to the handler of this function.</p>
+     <p><strong>Personality Function:</strong> 32-bit value with the MSB set to 0. It contains a <code class="highlight"><c- n>prel31</c-></code> offset to the function’s handler, typically <code class="highlight"><c- n>__gxx_personality_v0</c-></code> in GCC.</p>
     <li data-md>
-     <p><strong>Personality Data:</strong> Architecture specific unwind instructions.</p>
+     <p><strong>Personality Data:</strong> Architecture-specific unwind instructions.</p>
     <li data-md>
-     <p><strong>Header:</strong> Variable length sequence of bytes describing where DRAWF
-information is, where the type table ends, and how long the call site
-region is. The dwarf location and type table entries can be labelled with
-an omit flag <code class="highlight"><c- mh>0xFF</c-></code> to indicate they are empty.</p>
+     <p><strong>Header:</strong> A variable-length sequence of bytes that delineates where DWARF
+information is located, the end of the type table, and the extent of the
+call site region. Entries in the DWARF location and type table can be
+marked with an omit flag <code class="highlight"><c- mh>0xFF</c-></code> to indicate their absence.</p>
     <li data-md>
-     <p><strong>Call Site Table:</strong> Contains information about the regions of the function
-associated with try scopes and cleanup. It provides the  regions of the
-function that have specific
-actions associated with them as well as where the landing pad of the
-action is if any action is taken.</p>
+     <p><strong>Call Site Table:</strong> Details the regions of the function associated with
+try scopes and cleanup. This table specifies the areas of the function that
+have particular actions assigned, as well as the location of the landing
+pad if an action is taken.</p>
     <li data-md>
-     <p><strong>Action table:</strong> Provides the index(s) to the catch-able types for the call
-site region. It also indicates if there is cleanup to be done.</p>
+     <p><strong>Action Table:</strong> Lists the indices to the types that can be caught for
+each call site region and specifies whether cleanup is required.</p>
     <li data-md>
-     <p><strong>Type Table:</strong> Holds the unique set of <code class="highlight"><c- n>std</c-><c- o>::</c-><c- n>type_info</c-></code> addresses of
-catch-able types in the function.</p>
+     <p><strong>Type Table:</strong> Contains a unique set of <code class="highlight"><c- n>std</c-><c- o>::</c-><c- n>type_info</c-></code> addresses for the
+types that can be caught within the function.</p>
    </ol>
-   <p>To learn more about how these regions are layed out, see: <a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf"> HP Exception Handling Tables aC++ A.01.15. </a></p>
+   <p>To gain a deeper understanding of how these regions are structured, refer to: <a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf"> HP Exception Handling Tables aC++ A.01.15. </a></p>
    <h3 class="heading settled" data-level="2.5" id="dtor-landing-pads"><span class="secno">2.5. </span><span class="content">Destructor landing pads</span><a class="self-link" href="#dtor-landing-pads"></a></h3>
    <figure>
 <pre class="language-asm highlight">08001140 &lt;<c- nl>dtor:</c->:<c- nf>except_calls_all_except</c-><c- p>()</c->><c- p>:</c->
@@ -2208,15 +2266,16 @@ catch-able types in the function.</p>
 </pre>
     <figcaption>Isolated Destructor Cleanup Region</figcaption>
    </figure>
-   <p>These are regions within a function that the exception runtime will jump to
-when executing the destructors for this scope. Pictured above are ARM Thumb2
-instructions. Each instruction loads the address of the object on the stack
-into <code class="highlight"><c- n>R0</c-></code>, which is the register representing the first parameter for a
-function. It then calls the object’s destructor. The sequence is opposite of the
-construction of the objects. The Itanium API that is called to jump back into
-the exception unwind flow is <code class="highlight"><c- n>__cxa_end_cleanup</c-><c- p>()</c-></code>. Depending on what scope the
-code was in when the exception began propagating, will change at what point the
-program counter jumps into the function.</p>
+   <p>Within this function, there are designated regions that the exception runtime
+targets to execute destructors for the current frame. The figures above depict
+ARM Thumb2 instructions. These instructions specifically load the address of an
+object from the stack into <code class="highlight"><c- n>R0</c-></code>, which acts as the register for the first
+parameter in a function call, then the object’s destructor is invoked. This
+process is the reverse of the construction sequence of the objects. The Itanium
+API utilized to re-enter the exception unwind flow after all necessary
+destructors are called is <code class="highlight"><c- n>__cxa_end_cleanup</c-><c- p>()</c-></code>. The point at which the program
+counter re-enters the function is influenced by the scope where the exception
+propagation originated.</p>
    <h3 class="heading settled" data-level="2.6" id="catch-landing-pads"><span class="secno">2.6. </span><span class="content">Catch landing pads</span><a class="self-link" href="#catch-landing-pads"></a></h3>
    <figure>
 <pre class="language-asm highlight">80004<c- nl>fa:</c-> 2901        <c- nf>cmp</c-> <c- no>r1</c-><c- p>,</c-> <c- mi>#1</c->
@@ -2231,18 +2290,21 @@ program counter jumps into the function.</p>
 </pre>
     <figcaption>Catch landing pad example</figcaption>
    </figure>
-   <p>Itanium suggests transforming catch chains into switch case like blocks. The
-unwinder will load <code class="highlight"><c- n>R0</c-></code> with the exception object and <code class="highlight"><c- n>R1</c-></code> with the case number
-for the switch block. That is why the first instruction in the assembly above
-is a comparison between <code class="highlight"><c- n>R1</c-></code> and the number 1. If that fails, the unwind
-sequence is continued by executing <code class="highlight"><c- n>__cxa_end_cleanup</c-></code>. Otherwise, the code
-jumps to the start of the catch denoted with <code class="highlight"><c- n>__cxa_begin_catch</c-></code> and ends with
-a call to <code class="highlight"><c- n>__cxa_end_catch</c-></code>.</p>
+   <p>According to Itanium, catch chains should be transformed into switch-case-like
+blocks. The unwinder sets <code class="highlight"><c- n>R0</c-></code> with the exception object and <code class="highlight"><c- n>R1</c-></code> with the case
+number for the corresponding block. The initial instruction in the assembly
+above, comparing <code class="highlight"><c- n>R1</c-></code> with the number 1, determines the path of execution. If
+the comparison fails, the sequence proceeds to execute <code class="highlight"><c- n>__cxa_end_cleanup</c-></code>,
+continuing the exception propagation. If the comparison is successful, the flow
+transitions to <code class="highlight"><c- n>__cxa_begin_catch</c-></code>, executes the catch block, and concludes
+with <code class="highlight"><c- n>__cxa_end_catch</c-></code>.</p>
    <h2 class="heading settled" data-level="3" id="methods"><span class="secno">3. </span><span class="content">Methods</span><a class="self-link" href="#methods"></a></h2>
-   <p>To fulfill the objectives of this paper, we will develop a C++ application
-designed with diverse functions. This application will self-assess during
-runtime by examining its exception table entries and the exception table. The
-investigation aims to provide insights into:</p>
+   <p>To fulfill the objectives of this paper, a C++ application will be designed
+with a set of functions featuring noexcept and "except" functions in different
+usages. "except" in this case as a short hand for non-noexcept function. This
+application will self-assess during runtime by examining its exception table
+entries and the exception table. The investigation aims to provide insights
+into:</p>
    <ul>
     <li data-md>
      <p>Function exception rank</p>
@@ -2250,9 +2312,8 @@ investigation aims to provide insights into:</p>
      <p>LSDA size and the sizes of its sections (when applicable)</p>
    </ul>
    <h3 class="heading settled" data-level="3.1" id="rank"><span class="secno">3.1. </span><span class="content">Function Exception Rank</span><a class="self-link" href="#rank"></a></h3>
-   <p>In this study, "function exception rank" refers to a classification scheme for
-functions based on their exception metadata’s memory demands. This ranking
-system identifies:</p>
+   <p>"function exception rank" refers to a classification scheme for functions based
+on their exception metadata’s memory demands. This ranking system identifies:</p>
    <ol>
     <li data-md>
      <p><strong>No index entry</strong>: Indicates absence of an index table entry for functions
@@ -2565,7 +2626,8 @@ paper.</p>
      <tbody>
       <tr>
        <td>
-<pre class="language-C++ highlight"><c- b>void</c->
+<pre class="language-C++ highlight"><c- n>namespace</c-> <c- n>dtor</c-> <c- p>{</c->
+<c- b>void</c->
 <c- nf>noexcept_calls_all_noexcept</c-><c- p>()</c-> <c- n>noexcept</c->
 <c- p>{</c->
     <c- n>non_trivial_dtor</c-> <c- n>obj1</c-><c- p>;</c->
@@ -2578,9 +2640,11 @@ paper.</p>
     <c- n>obj2</c-><c- p>.</c-><c- n>noexcept_action</c-><c- p>();</c->
     <c- n>obj3</c-><c- p>.</c-><c- n>noexcept_action</c-><c- p>();</c->
 <c- p>}</c->
+<c- p>}</c->
 </pre>
        <td>
-<pre class="language-C++ highlight"><c- b>void</c->
+<pre class="language-C++ highlight"><c- n>namespace</c-> <c- n>dtor</c-> <c- p>{</c->
+<c- b>void</c->
 <c- nf>except_calls_all_noexcept</c-><c- p>()</c->
 <c- p>{</c->
     <c- n>non_trivial_dtor</c-> <c- n>obj1</c-><c- p>;</c->
@@ -2592,6 +2656,7 @@ paper.</p>
     <c- n>obj1</c-><c- p>.</c-><c- n>noexcept_action</c-><c- p>();</c->
     <c- n>obj2</c-><c- p>.</c-><c- n>noexcept_action</c-><c- p>();</c->
     <c- n>obj3</c-><c- p>.</c-><c- n>noexcept_action</c-><c- p>();</c->
+<c- p>}</c->
 <c- p>}</c->
 </pre>
       <tr>
@@ -2607,7 +2672,8 @@ paper.</p>
      <tbody>
       <tr>
        <td>
-<pre class="language-C++ highlight"><c- b>void</c->
+<pre class="language-C++ highlight"><c- n>namespace</c-> <c- n>dtor</c-> <c- p>{</c->
+<c- b>void</c->
 <c- nf>noexcept_calls_all_except</c-><c- p>()</c-> <c- n>noexcept</c->
 <c- p>{</c->
     <c- n>non_trivial_dtor</c-> <c- n>obj1</c-><c- p>;</c->
@@ -2620,9 +2686,11 @@ paper.</p>
     <c- n>obj2</c-><c- p>.</c-><c- n>action</c-><c- p>();</c->
     <c- n>obj3</c-><c- p>.</c-><c- n>action</c-><c- p>();</c->
 <c- p>}</c->
+<c- p>}</c->
 </pre>
        <td>
-<pre class="language-C++ highlight"><c- b>void</c->
+<pre class="language-C++ highlight"><c- n>namespace</c-> <c- n>dtor</c-> <c- p>{</c->
+<c- b>void</c->
 <c- nf>except_calls_all_except</c-><c- p>()</c->
 <c- p>{</c->
     <c- n>non_trivial_dtor</c-> <c- n>obj1</c-><c- p>;</c->
@@ -2634,6 +2702,7 @@ paper.</p>
     <c- n>obj1</c-><c- p>.</c-><c- n>action</c-><c- p>();</c->
     <c- n>obj2</c-><c- p>.</c-><c- n>action</c-><c- p>();</c->
     <c- n>obj3</c-><c- p>.</c-><c- n>action</c-><c- p>();</c->
+<c- p>}</c->
 <c- p>}</c->
 </pre>
       <tr>
@@ -2678,9 +2747,9 @@ will be <code class="highlight"><c- n>action</c-><c- p>()</c-></code>. All other
      </ul>
    </ul>
    <h3 class="heading settled" data-level="4.12" id="lsda-data"><span class="secno">4.12. </span><span class="content">LSDA Data</span><a class="self-link" href="#lsda-data"></a></h3>
-   <p>The data below is sorted by its total size. The total size only accounts for
-the size of the memory in the LSDA region. It does not include the exception
-index entry nor the cleanup region in the function.</p>
+   <p>The data below is sorted by total size. The total size only accounts for the
+size of the memory in the LSDA region. It does not include the exception index
+entry nor the cleanup region in the function.</p>
    <table border="1">
     <thead>
      <tr>
@@ -3024,22 +3093,20 @@ a frame is <code class="highlight"><c- n>size</c-><c- p>(</c-><c- n>n</c-><c- p>
 functions. <a href="#exhibit-8">§ 4.8 Exhibit 8: Leaf class function</a> has no exception index entry. This makes sense since
 the function does not throw an exception and does not call any other functions.
 There is no possibility that an exception will ever propagate from such a
-function. Thus their index entries can be removed.</p>
+function. Thus their index entries can be omitted from the table.</p>
    <p>If the functions of <a href="#exhibit-1">§ 4.1 Exhibit 1: Leaf Function</a> are moved between other functions that have
 exception index entries, then they will both get exception index entries with
-an inlined noexcept marker. GCC is able to deduce that the except function
-initialize never calls other functions and thus is de facto noexcept. But
+an inlined noexcept marker. GCC is able to deduce that the <code class="highlight"><c- n>initialize</c-></code> functions never calls other functions and thus is de facto noexcept. But
 rather than eliminate the entry, the compiler decides to provide an entry for
 both.</p>
-   <p>These entries do not need to exist and being able to eliminate them would free
-up 8 bytes of space per function. This seems like an opportunity for the
-compiler to be improved.</p>
+   <p>These entries do not need to exist and being able to omit them would free up 8
+bytes of space per function. This seems like an opportunity for the compiler to
+be improved.</p>
    <h3 class="heading settled" data-level="5.2" id="calling-only-noexcept-functions"><span class="secno">5.2. </span><span class="content">Calling only noexcept functions</span><a class="self-link" href="#calling-only-noexcept-functions"></a></h3>
    <p><a href="#exhibit-2">§ 4.2 Exhibit 2: Calling only noexcept functions</a> contains functions calling only noexcept functions. The noexcept
 function in this exhibit gets a rank 4 whereas the except function just gets a
-rank 3. In both cases, the compiler should have opted to eliminate their
-exception data entirely. These functions are never reachable via exception
-propagation.</p>
+rank 3. In both cases, the compiler should have opted to omit the exception
+data entirely. These functions are never reachable via exception propagation.</p>
    <p>The compiler has chosen data structures for these two functions way above what
 is necessary for them.</p>
    <h3 class="heading settled" data-level="5.3" id="compiler-making-bad-decisions"><span class="secno">5.3. </span><span class="content">Compiler Making Bad Choices</span><a class="self-link" href="#compiler-making-bad-decisions"></a></h3>
@@ -3047,11 +3114,11 @@ is necessary for them.</p>
 either use an except function or a mix of except and noexcept functions. None
 of the functions require cleanup or have any catch blocks.</p>
    <p>Yet, GCC chooses a mostly empty LSDA data structure for the noexcept functions.
-An inline noexcept flag would have worked as there is no cleanup work or
-try-catch blocks check scopes for.</p>
-   <p>The except functions have unwind instructions added to the exception table,
-meaning these very simple functions were not unwindable in a 3 unwind
-instructions. Taking a look at the disassembly below.</p>
+An inline noexcept flag would have worked as there is no objects to cleanup or
+catch blocks to consider.</p>
+   <p>The except functions have enough unwind instructions to warrant their data
+being placed in the exception table. Meaning these very simple functions were
+not unwindable in a 3 unwind instructions.</p>
 <pre class="language-asm highlight">080015<c- nf>a8</c-> &lt;<c- no>except_calls_all_except</c-><c- p>()</c->><c- p>:</c->
 80015<c- nl>a8:</c-> <c- nf>b508</c->        <c- no>push</c->  <c- p>{</c-><c- no>r3</c-><c- p>,</c-> <c- no>lr</c-><c- p>}</c->
 80015<c- nl>aa:</c-> <c- nf>f7ff</c-> <c- no>fcdd</c->   <c- no>bl</c->  <c- mi>8000</c-><c- no>f68</c-> &lt;<c- no>bar</c-><c- p>()</c->>
@@ -3068,27 +3135,28 @@ required to unwind it, specifically <code class="highlight"><c- mb>0b10101000</c
 could bring the exception rank to rank 2.</p>
    <p>All of these functions should have rank 2, inlined noexcept flag and inline
 personality.</p>
-   <h3 class="heading settled" data-level="5.4" id="except-poisoning"><span class="secno">5.4. </span><span class="content">Except poisoning</span><a class="self-link" href="#except-poisoning"></a></h3>
-   <p>Consistent with all exhibits, is that calling a single function that is not
-noexcept results in the function’s rank becoming at least rank 2. If every
-function called in a function is noexcept, the compiler can deduce that no
-exception will ever propagate from the function. But it only takes a single
-except function to completely break that deduction. So the benefits of calling
-noexcept functions is poisoned with the introduction of any except function.</p>
-   <h3 class="heading settled" data-level="5.5" id="reducing-cleanup-landing-pads"><span class="secno">5.5. </span><span class="content">Reducing Clean up landing Pads</span><a class="self-link" href="#reducing-cleanup-landing-pads"></a></h3>
-   <p>Noexcept function eliminated the cleanup regions completely. By marking a C++
-function noexcept, the cleanup region is completely removed because it could
-never be reachable.</p>
-   <p>If an except function is called after the construction of an object, then that
-object must be added to the cleanup landing pad area. This goes for any number
-of objects constructed before a call to an except function.</p>
-   <h3 class="heading settled" data-level="5.6" id="eliminating-try-catch-blocks"><span class="secno">5.6. </span><span class="content">Eliminating try/catch Blocks</span><a class="self-link" href="#eliminating-try-catch-blocks"></a></h3>
-   <p><a href="#exhibit-5">§ 4.5 Exhibit 5: Calling only noexcept in try/catch block</a> is interesting in that the compiler chooses a rank 2 for the
-noexcept function and rank 1 for the except function. Note that the rank 1 may
-be due to the position of the functions in the source code. But the compiler
-did choose suitably small options for the code. The disassembly for both is
-minimal and does not include any record of the catch blocks. The compiler was
-able to deduce that the catch blocks were dead code and eliminated them.</p>
+   <h3 class="heading settled" data-level="5.4" id="except-poisoning"><span class="secno">5.4. </span><span class="content">Except Poisoning</span><a class="self-link" href="#except-poisoning"></a></h3>
+   <p>A consistent observation across all exhibits is that calling a single except
+function, elevates the function’s rank to at least rank 2, accompanied by the
+necessary cleanup landing pads.</p>
+   <p>Thus, the advantages of calling <code class="highlight"><c- k>noexcept</c-></code> functions are negated by the
+introduction of any except function.</p>
+   <h3 class="heading settled" data-level="5.5" id="reducing-cleanup-landing-pads"><span class="secno">5.5. </span><span class="content">Reducing Cleanup Landing Pads</span><a class="self-link" href="#reducing-cleanup-landing-pads"></a></h3>
+   <p>Marking a C++ function as <code class="highlight"><c- k>noexcept</c-></code> completely eliminates the cleanup regions.
+Such regions become unreachable, making their inclusion unnecessary.</p>
+   <p>However, in an except functions, if the only functions called after the
+construction of an object are <code class="highlight"><c- k>noexcept</c-></code> functions, then the destructor call
+for that object can be omitted from the cleanup landing area. Calling a single
+except function afterwards will result in the object’s destructor call being
+added to the cleanup landing pad.</p>
+   <h3 class="heading settled" data-level="5.6" id="eliminating-try-catch-blocks"><span class="secno">5.6. </span><span class="content">Eliminating Try/Catch Blocks</span><a class="self-link" href="#eliminating-try-catch-blocks"></a></h3>
+   <p><a href="#exhibit-5">§ 4.5 Exhibit 5: Calling only noexcept in try/catch block</a> presents an interesting scenario where the compiler assigns a
+rank of 2 to the <code class="highlight"><c- k>noexcept</c-></code> function and a rank of 1 to the except function.
+The rank of 1 may be influenced by the placement of the functions within the
+source code. Nevertheless, the compiler opted for suitably minimal options for
+the code. The disassembly for both is minimal and excludes any record of the
+catch blocks. The compiler successfully determined that the catch blocks were
+unreachable and omitted them.</p>
 <pre class="language-asm highlight">080015<c- nf>bc</c-> &lt;<c- no>noexcept_calls_all_noexcept_in_try_catch</c-><c- p>()</c->><c- p>:</c->
 80015<c- nl>bc:</c-> <c- nf>b508</c->        <c- no>push</c->  <c- p>{</c-><c- no>r3</c-><c- p>,</c-> <c- no>lr</c-><c- p>}</c->
 80015<c- nl>be:</c-> <c- nf>f7ff</c-> <c- no>fc9d</c->   <c- no>bl</c->  <c- mi>8000</c-><c- no>efc</c-> &lt;<c- no>noexcept_bar</c-><c- p>()</c->>
@@ -3103,10 +3171,12 @@ able to deduce that the catch blocks were dead code and eliminated them.</p>
 80015<c- nl>d6:</c-> <c- nf>f7ff</c-> <c- no>bca3</c->   <c- no>b.w</c-> <c- mi>8000</c-><c- no>f20</c-> &lt;<c- no>noexcept_baz</c-><c- p>()</c->>
 80015<c- nl>da:</c-> <c- nf>bf00</c->        <c- no>nop</c->
 </pre>
-   <p><a href="#exhibit-6">§ 4.6 Exhibit 6: Calling both except &amp; noexcept in try/catch block</a> and <a href="#exhibit-7">§ 4.7 Exhibit 7: Calling only except in try/catch block</a> both show no real difference introduced by
-calling noexcept functions due to the except poisoning mentioned earlier. Here
-you can see the disassembly of noexcept_calls_mixed_in_try_catch with the
-Itanium catch block APIs <code class="highlight"><c- n>__cxa_begin_catch</c-></code> and <code class="highlight"><c- n>__cxa_end_catch</c-></code>.</p>
+   <p>Note that calling all noexcept functions within a try block is a code smell.
+It begs the question of, "what exception were you expecting to catch from these
+APIs?"</p>
+   <p><a href="#exhibit-6">§ 4.6 Exhibit 6: Calling both except &amp; noexcept in try/catch block</a> and <a href="#exhibit-7">§ 4.7 Exhibit 7: Calling only except in try/catch block</a> both show no difference introduced by
+labeling the functions as noexcept, due to the except poisoning mentioned
+earlier. You can see the disassembly of <code class="highlight"><c- n>noexcept_calls_mixed_in_try_catch</c-></code> with the Itanium catch block APIs <code class="highlight"><c- n>__cxa_begin_catch</c-></code> and <code class="highlight"><c- n>__cxa_end_catch</c-></code>.</p>
 <pre class="language-asm highlight">080015<c- nf>dc</c-> &lt;<c- no>noexcept_calls_mixed_in_try_catch</c-><c- p>()</c->><c- p>:</c->
 80015<c- nl>dc:</c-> <c- nf>b508</c->        <c- no>push</c->  <c- p>{</c-><c- no>r3</c-><c- p>,</c-> <c- no>lr</c-><c- p>}</c->
 80015<c- nl>de:</c-> <c- nf>f7ff</c-> <c- no>fcc3</c->   <c- no>bl</c->  <c- mi>8000</c-><c- no>f68</c-> &lt;<c- no>bar</c-><c- p>()</c->>
@@ -3121,9 +3191,6 @@ Itanium catch block APIs <code class="highlight"><c- n>__cxa_begin_catch</c-></c
 80015<c- nl>fa:</c-> <c- nf>bd08</c->        <c- no>pop</c-> <c- p>{</c-><c- no>r3</c-><c- p>,</c-> <c- no>pc</c-><c- p>}</c->
 80015<c- nl>fc:</c-> 20000<c- nf>b60</c->  <c- no>.word</c-> <c- mi>0x20000b60</c->
 </pre>
-   <p>Calling all noexcept functions within a try block seems like a code smell,
-because it begs the question of, "what exception were you expecting to catch
-with these APIs?"</p>
    <h2 class="heading settled" data-level="6" id="conclusion"><span class="secno">6. </span><span class="content">Conclusion</span><a class="self-link" href="#conclusion"></a></h2>
    <p>Noexcept can be useful in cases such as where a strong exception guarantee is
 needed. But in terms of code gen, it’s a mixed bag. In general, adding the <code class="highlight"><c- k>noexcept</c-></code> to a function reduces its code gen.</p>
@@ -3134,16 +3201,16 @@ needed. But in terms of code gen, it’s a mixed bag. In general, adding the <co
     <li data-md>
      <p>Removing dead catch blocks</p>
    </ol>
-   <p>The second benefit is mostly a code smell. Removing destructor landing pads is
-useful, but making a function noexcept for this purpose seems a bit extreme.</p>
+   <p>Removing destructor landing pads is useful, but making a function noexcept for
+this purpose seems a bit extreme.</p>
    <p>Noexcept also tends to cause GCC to change what would have been 0 bytes of
 exception data into requiring a mostly empty LSDA section and exception index
-entry. The benefits of noexcept only occur as an edge case. An edge case that
-breaks once a single function capable of throwing an exception is called within
-a function.</p>
-   <p>We want to give the compiler as much information and guarantees as possible so
-it can help generate more efficient code for us, but do we really need noexcept
-for that?</p>
+entry.</p>
+   <p>The benefits of noexcept only occur as an edge case. An edge case that breaks
+once a single function capable of throwing an exception is called within that
+function.</p>
+   <p>We want to give the compiler as much information and guarantees as possible to
+coax it into generating more efficient code for us, but do we really need <code class="highlight"><c- k>noexcept</c-></code> for that?</p>
    <p>Given the data in this study, I believe the right choice is to look for
 improvements in toolchains. Changes to code should not be necessary because
 there are many of the improvements to code gen that can be performed without
@@ -3164,25 +3231,27 @@ rank options. Here are a few checks that could be performed:</p>
    <h3 class="heading settled" data-level="6.2" id="group-functions"><span class="secno">6.2. </span><span class="content">Group functions with identical exception entries</span><a class="self-link" href="#group-functions"></a></h3>
    <p>GCC merges identical exception entries when the functions are right next to
 each other in the source code. The linker could generate a first run of the
-exception index, collect all of the identical entries, and group all functions
-with identical entries. Now all of the identical entires can be merged into a
-single entry.</p>
-   <h3 class="heading settled" data-level="6.3" id="deduce-noexcept"><span class="secno">6.3. </span><span class="content">Deduce noexcept in functions</span><a class="self-link" href="#deduce-noexcept"></a></h3>
-   <p>Many function are noexcept without being marked as such. They call other
-functions that, but down the entire call graph of a function, no function ever
-throws an exception. What if, rather than marking such functions as noexcept,
-the linker is able to determine if a function is exception propagating or not.
-This would require a form of link time optimization, but it should be
-technically feasible. GCC can already generate a callgraph using the flag <code class="highlight"><c- o>-</c-><c- n>fcallgraph</c-><c- o>-</c-><c- n>info</c-></code>. So what if the linker evaluate all functions that it has
-full knowledge about and determines which functions throw. Using that
-information, determine which paths could never throw an exception, and mark all
-paths outside of this as noexcept. Leaf functions get an implicit <code class="highlight"><c- k>noexcept</c-></code> marking. Functions that call functions that never result in an exception being
-thrown would also be implicitly marked as <code class="highlight"><c- k>noexcept</c-></code>. For APIs outside of an
-application, like a shared library, the linker will have to assume that a
-function that is not marked <code class="highlight"><c- k>noexcept</c-></code>, does propagate an exception.</p>
-   <p>With something like this, a C++ application could get the benefits of marking
-many of its non-throwing functions as noexcept but with the flexibility to
-change your mind later.</p>
+exception index, collect all of the identical entries, and then group all
+functions with identical entries. Now all of the identical entires can be
+merged into a single entry, reducing the size of the table.</p>
+   <h3 class="heading settled" data-level="6.3" id="deduce-noexcept"><span class="secno">6.3. </span><span class="content">Deduce <code class="highlight"><c- k>noexcept</c-></code> in Functions</span><a class="self-link" href="#deduce-noexcept"></a></h3>
+   <p>Many functions operate as <code class="highlight"><c- k>noexcept</c-></code> without being explicitly marked as such;
+they call other functions, and down the entire call graph, no function ever
+throws an exception. Instead of manually marking such functions as <code class="highlight"><c- k>noexcept</c-></code>,
+it is feasible for the linker to determine whether a function is exception
+propagating. GCC, for instance, can already generate a call graph using the <code class="highlight"><c- o>-</c-><c- n>fcallgraph</c-><c- o>-</c-><c- n>info</c-></code> flag. The proposed idea is for the linker to evaluate all
+functions it has full assembly information of and determine which ones throw
+exceptions. Using this information, the linker could identify functions that
+could never throw an exception and automatically mark all them <code class="highlight"><c- k>noexcept</c-></code>. Leaf
+functions would receive an implicit <code class="highlight"><c- k>noexcept</c-></code> marking. Similarly, if an except
+functions calls a set of functions that have implicitly marked <code class="highlight"><c- k>noexcept</c-></code> then
+that function could also be marked as implicitely noexcept. For APIs external
+to an application, such as those in a shared library, the linker would have to
+assume that any function not explicitly marked as <code class="highlight"><c- k>noexcept</c-></code> does propagate
+exceptions.</p>
+   <p>Implementing such a mechanism would allow a C++ application to benefit from
+marking many of its non-throwing functions as <code class="highlight"><c- k>noexcept</c-></code>, while retaining the
+flexibility to adjust this designation as needed in the future.</p>
   </main>
 <script>
 (function() {
