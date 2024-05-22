@@ -1,30 +1,31 @@
 <pre class='metadata'>
 Title: Impacts of noexept on ARM table based exception metadata
-Shortname: P3313R0
+Editor: Khalil Estell, khalil.estell@sjsu.edu
+Shortname: P3313
 Revision: 0
 Status: DTR
 Date: 2024-05-22
 Group: WG21
 Audience: LEWG, LWG
-URL: http://wg21.link/P3313R0
-Editor: Khalil Estell, khalil.estell@sjsu.edu
+URL: https://isocpp.org/files/papers/D3313R0.html
 Abstract: C++ exceptions serve as the core mechanism for propagating errors
           from their detection points to respective handlers. The `noexcept`
           keyword informs the compiler that a function is guaranteed to not
           emit exceptions. This assurance is purported to enable compilers to
           undertake specific optimizations that can enhance code gen
           significantly. This paper examines the influence of the noexcept
-          keyword on the management of exception metadata, specifically within
-          the framework of "zero-cost" table-based Itanium exception handling
-          mechanisms utilized by the ARM Exception Handling ABI (ARM EHABI).
-          Our findings reveal that the current strategies for exception
-          metadata selection for functions by the GCC toolchain is often
-          suboptimal. We propose targeted improvements including the adoption
-          of more compact data structures where beneficial, and link-time
-          analysis to determine the implicit noexcept status of functions. This
-          approach would provide the desired effect of using noexcept in as
-          many places as possible without the cost of marking each function as
-          such.
+          keyword on the management of exception metadata and cleanup landing
+          pads, specifically within the framework of "zero-cost" table-based
+          Itanium exception handling mechanisms utilized by the ARM Exception
+          Handling ABI (ARM EHABI). This study shows that the current
+          strategies for selecting exception metadata for functions by the GCC
+          toolchain is often suboptimal. The propose improvements include
+          better selection of exception metadata for functions, grouping
+          functions with identical exception metadata so they can be merged,
+          and link-time analysis to determine the implicit noexcept status of
+          functions. This approach would provide the desired effect of using
+          noexcept in as many places as possible without the cost of marking
+          each function as such.
 Repository: kammce/cpp-papers
 Dark Mode: no
 Markup Shorthands: markdown on
@@ -54,11 +55,11 @@ The research will conclude with recommendations for optimizing code generation.
 Background {#background}
 ========================
 
-This paper will focus on the GCC/Clang and Itanium table based exceptions on
-ARM. The author is experienced with this form of exception handling and this
-architecture. The insights provided here should be consistent with other forms
-of table based exception handling. All data related to the exception data
-structures can be found at this link:
+This paper will focus on the Itanium table based exceptions on ARM as used by
+GCC. This choice comes from the author's experience with this form of exception
+handling and this architecture. The insights provided here should be consistent
+with other forms of table based exception handling. All data related to the
+exception data structures can be found at this link:
 <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst">
 ARM-software/abi-aa: ehabi32.rst
 </a>
@@ -86,6 +87,24 @@ struct arm_index_entry
  std::uint32_t function;
  std::uint32_t content;
 };
+```
+
+The placement of each entry is relative to the position of its corrisponding
+function in the `.text` section of the program. For example if the `.text`
+section starts with function `foo`, then function `bar`, then function `baz`,
+then the exception index's first entries be for `foo`, `bar` and `baz` in that
+order. The index MUST be binary searchable using the program counter as
+the search term. The goal is to find the index entry associated with the
+function that the program counter is currently within the bounds of. This is
+checked by performing the following this expression:
+
+```C++
+void* entry_function_address = to_absolute_address(&entry[i].function);
+void* next_entry_function_address = to_absolute_address(&entry[i + 1].function);
+
+if (entry_function_address <= PC && PC < next_entry_function_address) {
+    return entry[i];
+}
 ```
 
 The interpretation of the content field is determined by the status of the 31st
@@ -137,7 +156,9 @@ Below are some of the common unwind instructions:
    </tr>
    <tr>
       <td>00xxxxxx</td>
-      <td>vsp = vsp + (xxxxxx < < 2) + 4. Covers range 0x04 - 0x100 inclusive</td>
+      <td>
+      vsp = vsp + (xxxxxx < < 2) + 4. Covers range 0x04 - 0x100 inclusive
+      </td>
    </tr>
    <tr>
       <td>10000000 00000000</td>
@@ -370,12 +391,15 @@ Experimental Setup {#setup}
 - **Instruction Set**: ARM THUMB 2
 - **Target Processor**: Cortex M3 (executed on an stm32f103c8 microcontroller)
 - **libc**: picolibc (to re-enable exception handling in the compiler)
-- **Project URL**: https://github.com/kammce/cpp-papers/tree/main/noexcept
+- **Project URL**: [https://github.com/kammce/cpp-papers/tree/main/noexcept](https://github.com/kammce/cpp-papers/tree/main/noexcept)
 - **Debugging Technology**: `PyOCD` + `ST-Link V2`
 
 All C++ functions in or used by an exhibit in the results section will be
 marked as `[[gnu::noinline]]` in order to prevent the compiler from inlining
 the functions.
+
+The `/noexcept` directory in the repo provides a README file explaining how to
+build and execute the code.
 
 Results {#results}
 ====================
