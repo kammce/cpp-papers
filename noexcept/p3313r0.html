@@ -2,7 +2,7 @@
  <head>
   <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
   <meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport">
-  <title>P3313R0R0: Impacts of noexept on ARM table based exception metadata</title>
+  <title>P3313R0: Impacts of noexept on ARM table based exception metadata</title>
 <style data-fill-with="stylesheet">/******************************************************************************
  *                   Style sheet for the W3C specifications                   *
  *
@@ -1562,9 +1562,9 @@ Possible extra rowspan handling
     blockquote c-[il] { color: inherit; } /* Literal.Number.Integer.Long */
   </style>
   <meta content="Bikeshed version d765c696b, updated Fri Mar 8 15:58:52 2024 -0800" name="generator">
-  <link href="http://wg21.link/P3313R0" rel="canonical">
+  <link href="https://isocpp.org/files/papers/D3313R0.html" rel="canonical">
   <link href="https://isocpp.org/favicon.ico" rel="icon">
-  <meta content="4012683c60621c87a11520f2e0c24d5cb71fe944" name="revision">
+  <meta content="9d6822aa1e6641dc459446e9873e6340cff7c843" name="revision">
 <style>/* Boilerplate: style-autolinks */
 .css.css, .property.property, .descriptor.descriptor {
     color: var(--a-normal-text);
@@ -1907,12 +1907,12 @@ c-[il] { color: #000000 } /* Literal.Number.Integer.Long */
  <body class="h-entry">
   <div class="head">
    <p data-fill-with="logo"></p>
-   <h1 class="p-name no-ref" id="title">P3313R0R0<br>Impacts of noexept on ARM table based exception metadata</h1>
+   <h1 class="p-name no-ref" id="title">P3313R0<br>Impacts of noexept on ARM table based exception metadata</h1>
    <h2 class="no-num no-toc no-ref heading settled" id="profile-and-date"><span class="content">Draft Technical Report, <time class="dt-updated" datetime="2024-05-22">2024-05-22</time></span></h2>
    <div data-fill-with="spec-metadata">
     <dl>
      <dt>This version:
-     <dd><a class="u-url" href="http://wg21.link/P3313R0">http://wg21.link/P3313R0</a>
+     <dd><a class="u-url" href="https://isocpp.org/files/papers/D3313R0.html">https://isocpp.org/files/papers/D3313R0.html</a>
      <dt class="editor">Author:
      <dd class="editor p-author h-card vcard"><a class="p-name fn u-email email" href="mailto:khalil.estell@sjsu.edu">Khalil Estell</a>
      <dt>Audience:
@@ -1931,17 +1931,18 @@ from their detection points to respective handlers. The <code class="highlight">
 emit exceptions. This assurance is purported to enable compilers to
 undertake specific optimizations that can enhance code gen
 significantly. This paper examines the influence of the noexcept
-keyword on the management of exception metadata, specifically within
-the framework of "zero-cost" table-based Itanium exception handling
-mechanisms utilized by the ARM Exception Handling ABI (ARM EHABI).
-Our findings reveal that the current strategies for exception
-metadata selection for functions by the GCC toolchain is often
-suboptimal. We propose targeted improvements including the adoption
-of more compact data structures where beneficial, and link-time
-analysis to determine the implicit noexcept status of functions. This
-approach would provide the desired effect of using noexcept in as
-many places as possible without the cost of marking each function as
-such.</p>
+keyword on the management of exception metadata and cleanup landing
+pads, specifically within the framework of "zero-cost" table-based
+Itanium exception handling mechanisms utilized by the ARM Exception
+Handling ABI (ARM EHABI). This study shows that the current
+strategies for selecting exception metadata for functions by the GCC
+toolchain is often suboptimal. The propose improvements include
+better selection of exception metadata for functions, grouping
+functions with identical exception metadata so they can be merged,
+and link-time analysis to determine the implicit noexcept status of
+functions. This approach would provide the desired effect of using
+noexcept in as many places as possible without the cost of marking
+each function as such.</p>
   </div>
   <nav data-fill-with="table-of-contents" id="toc">
    <h2 class="no-num no-toc no-ref" id="contents">Table of Contents</h2>
@@ -2022,11 +2023,11 @@ manage objects with non-trivial destructors?</p>
    </ol>
    <p>The research will conclude with recommendations for optimizing code generation.</p>
    <h2 class="heading settled" data-level="2" id="background"><span class="secno">2. </span><span class="content">Background</span><a class="self-link" href="#background"></a></h2>
-   <p>This paper will focus on the GCC/Clang and Itanium table based exceptions on
-ARM. The author is experienced with this form of exception handling and this
-architecture. The insights provided here should be consistent with other forms
-of table based exception handling. All data related to the exception data
-structures can be found at this link: <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst"> ARM-software/abi-aa: ehabi32.rst </a></p>
+   <p>This paper will focus on the Itanium table based exceptions on ARM as used by
+GCC. This choice comes from the author’s experience with this form of exception
+handling and this architecture. The insights provided here should be consistent
+with other forms of table based exception handling. All data related to the
+exception data structures can be found at this link: <a href="https://github.com/ARM-software/abi-aa/blob/main/ehabi32/ehabi32.rst"> ARM-software/abi-aa: ehabi32.rst </a></p>
    <p>The GCC LSDA is an exception to this which can be found in the document <a href="https://itanium-cxx-abi.github.io/cxx-abi/exceptions.pdf"> HP Exception Handling Tables aC++ A.01.15. </a></p>
    <h3 class="heading settled" data-level="2.1" id="arm-exception-index"><span class="secno">2.1. </span><span class="content">ARM Exception Index</span><a class="self-link" href="#arm-exception-index"></a></h3>
    <p>In the ARM Exception Handling ABI, each function involved in exception
@@ -2045,6 +2046,20 @@ position-relative, 31-bit offset to the function’s exception metadata.</p>
  <c- n>std</c-><c- o>::</c-><c- b>uint32_t</c-> <c- n>function</c-><c- p>;</c->
  <c- n>std</c-><c- o>::</c-><c- b>uint32_t</c-> <c- n>content</c-><c- p>;</c->
 <c- p>};</c->
+</pre>
+   <p>The placement of each entry is relative to the position of its corrisponding
+function in the <code class="highlight"><c- p>.</c-><c- n>text</c-></code> section of the program. For example if the <code class="highlight"><c- p>.</c-><c- n>text</c-></code> section starts with function <code class="highlight"><c- n>foo</c-></code>, then function <code class="highlight"><c- n>bar</c-></code>, then function <code class="highlight"><c- n>baz</c-></code>,
+then the exception index’s first entries be for <code class="highlight"><c- n>foo</c-></code>, <code class="highlight"><c- n>bar</c-></code> and <code class="highlight"><c- n>baz</c-></code> in that
+order. The index MUST be binary searchable using the program counter as
+the search term. The goal is to find the index entry associated with the
+function that the program counter is currently within the bounds of. This is
+checked by performing the following this expression:</p>
+<pre class="language-C++ highlight"><c- b>void</c-><c- o>*</c-> <c- n>entry_function_address</c-> <c- o>=</c-> <c- n>to_absolute_address</c-><c- p>(</c-><c- o>&amp;</c-><c- n>entry</c-><c- p>[</c-><c- n>i</c-><c- p>].</c-><c- n>function</c-><c- p>);</c->
+<c- b>void</c-><c- o>*</c-> <c- n>next_entry_function_address</c-> <c- o>=</c-> <c- n>to_absolute_address</c-><c- p>(</c-><c- o>&amp;</c-><c- n>entry</c-><c- p>[</c-><c- n>i</c-> <c- o>+</c-> <c- mi>1</c-><c- p>].</c-><c- n>function</c-><c- p>);</c->
+
+<c- k>if</c-> <c- p>(</c-><c- n>entry_function_address</c-> <c- o>&lt;=</c-> <c- n>PC</c-> <c- o>&amp;&amp;</c-> <c- n>PC</c-> <c- o>&lt;</c-> <c- n>next_entry_function_address</c-><c- p>)</c-> <c- p>{</c->
+    <c- k>return</c-> <c- n>entry</c-><c- p>[</c-><c- n>i</c-><c- p>];</c->
+<c- p>}</c->
 </pre>
    <p>The interpretation of the content field is determined by the status of the 31st
 bit:</p>
@@ -2100,7 +2115,7 @@ appropriate coprocessor.</p>
       <th>Explanation
      <tr>
       <td>00xxxxxx
-      <td>vsp = vsp + (xxxxxx &lt; &lt; 2) + 4. Covers range 0x04 - 0x100 inclusive
+      <td> vsp = vsp + (xxxxxx &lt; &lt; 2) + 4. Covers range 0x04 - 0x100 inclusive 
      <tr>
       <td>10000000 00000000
       <td>Refuse to unwind (for example, out of a cleanup)
@@ -2344,13 +2359,15 @@ areas, starting at 28 bytes and increasing based on complexity.</p>
     <li data-md>
      <p><strong>libc</strong>: picolibc (to re-enable exception handling in the compiler)</p>
     <li data-md>
-     <p><strong>Project URL</strong>: https://github.com/kammce/cpp-papers/tree/main/noexcept</p>
+     <p><strong>Project URL</strong>: <a href="https://github.com/kammce/cpp-papers/tree/main/noexcept">https://github.com/kammce/cpp-papers/tree/main/noexcept</a></p>
     <li data-md>
      <p><strong>Debugging Technology</strong>: <code class="highlight"><c- n>PyOCD</c-></code> + <code class="highlight"><c- n>ST</c-><c- o>-</c-><c- n>Link</c-> <c- n>V2</c-></code></p>
    </ul>
    <p>All C++ functions in or used by an exhibit in the results section will be
 marked as <code class="highlight"><c- p>[[</c-><c- n>gnu</c-><c- o>::</c-><c- n>noinline</c-><c- p>]]</c-></code> in order to prevent the compiler from inlining
 the functions.</p>
+   <p>The <code class="highlight"><c- o>/</c-><c- k>noexcept</c-></code> directory in the repo provides a README file explaining how to
+build and execute the code.</p>
    <h2 class="heading settled" data-level="4" id="results"><span class="secno">4. </span><span class="content">Results</span><a class="self-link" href="#results"></a></h2>
    <p>All functions with the prefix "noexcept" are noexcept functions.</p>
    <p>There exists an array called side_effect which is a <code class="highlight"><c- n>std</c-><c- o>::</c-><c- n>array</c-></code> of <code class="highlight"><c- k>volatile</c-> <c- n>std</c-><c- o>::</c-><c- b>uint32_t</c-></code> numbers. This is to prevent the compiler from deducing
